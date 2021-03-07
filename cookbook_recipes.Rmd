@@ -1,0 +1,514 @@
+---
+title: "A recipe book of brain plots"
+author: |
+  | Yohan Yee
+  | version 0.1
+date: "March 4, 2021"
+output: 
+  rmdformats::readthedown:
+    self_contained: true
+    highlight: tango
+    lightbox: true
+    df_print: paged
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+cwd <- "~/dev/miceviz/"
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(root.dir=cwd)
+setwd(cwd)
+
+library(tidyverse)
+library(glue)
+library(RMINC)
+```
+
+\newpage
+# Introduction
+
+This cookbook contains recipes to create various plots using `ggplot2`. Each recipe contains code that can be run independent of other recipes / cookbooks, and should re-create the featured plot given appropriate paths. 
+
+<div class="alert alert-info">
+  <strong>Note:</strong> the `MRIcrotome` package provides an easier interface for plotting brain slices. Plots can be customized with `ggplot` however.
+</div>
+
+\newpage
+# Brain slices on a white background
+
+## Goal
+
+Plot a series of coronal slices through the brain similar to `MRIcrotome`'s `sliceSeries()` or `RMINC`'s `mincPlotSliceSeries()` functions, but on a white background.
+
+## Ingredients
+
+Libraries:
+
+```{r}
+library(tidyverse)
+library(glue)
+library(RMINC)
+library(scales)
+library(patchwork)
+```
+
+Input arguments:
+
+* `background_file`, a path to a .mnc file, corresponding to the background anatomy
+* `mask_file`, a path to a .mnc file, that defines a brain mask corresponding to the anatomy
+* `slices`, a vector of indices, corresponding to slices (based on world coordinates) that you want to plot
+
+```{r}
+background_file <- "resources/brain_slices/average_template_50.mnc"
+mask_file <- "resources/brain_slices/average_template_50_mask.mnc"
+slices <- seq(from=-3, to=2, by=1)
+```
+
+## Step 1: Load the data
+
+Load the data (.mnc files corresponding to brain anatomy and mask) that you want to plot using `mincGetVolume()`. 
+
+```{r}
+# Read in the MINC volume 
+vol <- mincGetVolume(background_file)
+mvol <- mincGetVolume(mask_file) 
+```
+
+## Step 2: Fix non-brain values so that they will appear white
+
+First, determine an intensity value that will be considered white. Then, set values outside values outside the brain mask to this value.
+
+```{r}
+# Set the background to white
+# Idea: the background (stuff outside the brain mask) can be set to the highest value within the brain (white on a greyscale colour bar with standard range)
+# We'll improve the idea by setting it to a value bit less than that, to improve contrast
+max_intensity <- max(vol[mvol > 0.5])
+vol[mvol < 0.5] <- 0.75*max_intensity
+
+# Convert to 3D array
+arr <- mincArray(vol)
+```
+
+## Step 3: Convert world coordinates to voxel indices
+
+For each slice, convert world coordinates to voxel indices for the slices to be plotted. The output is a data frame with three columns corresponding to each slice's world and voxel coordinates, and an index. The data frame is printed out at the end to see this. 
+
+```{r}
+# Convert to voxel coordinates by mapping over world coordinates
+# This is specifically for coronal slices
+# Note: if modifying this code for other dimensions (e.g. sagittal slices), confirm the ordering of these dimensions
+#   - some tools require/output coordinates as x,y,z while others use z,y,x ordering
+slices_voxel <- slices %>%
+  map_dfr(
+    function(w) {
+      world_coord_y <- w
+      voxel_coord_y <- mincConvertWorldToVoxel(background_file, 0, w, 0)[2]
+      out <- tibble(world=world_coord_y, voxel=voxel_coord_y)
+      return(out)
+    }
+  ) %>%
+  arrange(desc(world)) %>%
+  mutate(index=1:nrow(.))
+
+# Print 
+print(slices_voxel)
+```
+
+## Step 4. Get starting and ending (world) coordinates
+
+Get starting and ending (world) coordinates so we can appropriately label the axes of the plot. 
+
+```{r}
+starts <- mincConvertVoxelToWorld(background_file, 0, 0, 0)
+ends <- mincConvertVoxelToWorld(background_file, dim(arr)[3]-1, dim(arr)[2]-1, dim(arr)[1]-1)
+```
+
+## Step 5: Extract slices and put into data frame
+
+Extract slices for these voxel coordinates and wrangle the data to long format. Slicing the array provides a 2D array of intensity values for each slice. To plot this with `ggplot` however, we need to put the data into "long" form, so that we have two columns corresponding to the row and column index, and a third column corresponding to intensity.
+
+```{r}
+# Map over each coronal slice
+plt_df <- seq_along(slices) %>%
+  map_dfr(
+    function(i) {
+      
+      # Get world and voxel coordinates corresponding to slice
+      w <- slices_voxel$world[i]
+      s <- slices_voxel$voxel[i]
+      index <- slices_voxel$index[i]
+      
+      # Get 2D array corresponding to background intensities
+      coronal_slice_array <- arr[,s,]
+      
+      # Label row and column names for this array according to the world coordinates
+      rownames(coronal_slice_array) <- as.character(seq(from=starts[1], to=ends[1], length.out = dim(arr)[1]))
+      colnames(coronal_slice_array) <- as.character(seq(from=starts[3], to=ends[3], length.out = dim(arr)[3]))
+      
+      # Wrangle data to long form
+      out <- coronal_slice_array %>%
+        as_tibble %>%
+        mutate(x=rownames(coronal_slice_array)) %>%
+        gather(key = "y", value="intensity", -one_of("x")) %>%
+        mutate(x=as.numeric(x), 
+               y=as.numeric(y),
+               coronal_slice_voxel=s,
+               coronal_slice_world=w,
+               coronal_slice_index=index)
+      
+      # Return 
+      return(out)
+    }
+  )
+```
+
+## Step 6: Create a basic plot
+
+Using the `geom_raster()` layer, we can plot the intensities. 
+
+```{r}
+plt_df %>%
+  mutate(facet_title=glue("Coronal slice at:\nworld coord: {coronal_slice_world}\nvoxel coord: {coronal_slice_voxel}")) %>%
+  mutate(facet_title=fct_reorder(facet_title, rev(coronal_slice_voxel))) %>%
+  ggplot(aes(x=x, y=y)) +
+  geom_raster(aes(fill=intensity), interpolate = T) +
+  facet_wrap(~ facet_title, nrow=2) + 
+  coord_fixed() + 
+  scale_fill_gradient(low="black", high = "white", limits=c(min(arr), 0.75*max_intensity), oob=squish) +
+  xlab("Right-left (world) coordinate") +
+  ylab("Superior-inferior (world) coordinate") +
+  labs(title="Coronal brain slices", 
+       subtitle=glue("{length(slices)} evenly spaced slices")) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+## Step 7:  Add a slice locator
+
+We'll take contours from a sagittal slice and mark the positions of the coronal slice. 
+
+```{r}
+# Get the background file as an array
+# Previously, we modified values in this array (setting non-brain values to white)
+# Use the unmodified array for contours (so load this in again)
+arr_original <- mincArray(mincGetVolume(background_file))
+
+# Pick a sagittal slice for the contour
+sagittal_slice <- arr_original[110, , ]
+
+# Pick the intensities at which to determine the contours
+contour_levs <- c(20, 50, 80, 100, 120)
+
+# Use grDevices::contourLines() to get the contours
+# Returns a list of contour paths
+sagittal_contours <- contourLines(x = seq(from=starts[2], to=ends[2], length.out = dim(arr_original)[2]), 
+                                  y = seq(from=starts[3], to=ends[3], length.out = dim(arr_original)[3]), 
+                                  z = sagittal_slice, 
+                                  levels = contour_levs)
+
+# Contour data comes as a list. Put it into a data frame and index each contour path with a new column (obj)
+sagittal_contours_df <- 1:length(sagittal_contours) %>%
+  map(function(i) {as_tibble(sagittal_contours[[i]]) %>%
+      mutate(obj=i)}) %>%
+  bind_rows() 
+
+# Many contour paths exist. Remove the small ones by filtering out paths with few points
+sagittal_contours_df <- sagittal_contours_df %>%
+  group_by(obj) %>%
+  filter(length(level) >= 200) %>%
+  ungroup()
+
+# Plot contours
+sagittal_contours_df %>%
+  ggplot(aes(x=x, y=y, group=obj)) +
+  geom_path(aes(color=level)) +
+  geom_vline(aes(xintercept=world), data=slices_voxel, color='red', lty=1, size=1.5) +
+  coord_fixed() +
+  scale_color_gradient(name="Intensity level", low = 'grey80', high='grey20') +
+  scale_x_continuous(breaks = seq(from=-8, to=5, by=1)) +
+  scale_y_continuous(breaks = seq(from=-2, to=5, by=1)) +
+  xlab("Anterior-posterior (world) coordinate") +
+  ylab("Superior-inferior (world) coordinate") +
+  theme_bw()
+
+```
+
+
+## Step 8:  Combine slice locator with plot and prettify
+
+Finally, put everything together (stylized slice locator and slice plot) using functions from the `patchwork` library. 
+
+```{r}
+# Plot the locator (slightly modified from before)
+plt_locator <- sagittal_contours_df %>%
+  ggplot(aes(x=x, y=y)) +
+  geom_path(aes(color=level, group=obj)) +
+  geom_segment(aes(x=world, xend=world, y=-2, yend=5), data=slices_voxel, color='red', lty=1, size=0.8) +
+  geom_label(aes(x=world, y=-2.5, label=index), 
+            hjust=0.5,
+            size=3,
+            color='red',
+            data=slices_voxel) +
+  coord_fixed() +
+  scale_color_gradient(name="Intensity level", low = 'grey80', high='grey20', guide=F) +
+  scale_x_reverse(breaks = c()) +
+  scale_y_continuous(breaks = c(), limits=c(-4, 5)) +
+  theme_bw() + 
+  theme(panel.border = element_blank(),
+        panel.grid = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank())
+
+# Plot the slices (slightly modified from before)
+plt_slices <- plt_df %>%
+  mutate(facet_annotation=glue("AP-coordinate:\n{coronal_slice_world} mm")) %>%
+  mutate(facet_annotation=fct_reorder(facet_annotation, rev(coronal_slice_voxel))) %>%
+  ggplot(aes(x=x, y=y)) +
+  geom_raster(aes(fill=intensity), interpolate = T) +
+  geom_text(aes(x=5, y=6, label=facet_annotation), 
+            hjust=1,
+            size=3,
+            data=. %>% 
+              group_by(coronal_slice_voxel) %>%
+              slice(1) %>%
+              ungroup()) +
+  geom_label(aes(x=-4, y=6, label=coronal_slice_index), 
+            hjust=0.5,
+            size=5,
+            color='red',
+            data=. %>% 
+              group_by(coronal_slice_index) %>%
+              slice(1) %>%
+              ungroup()) +
+  facet_wrap(~ facet_annotation, nrow=2) + 
+  coord_fixed() + 
+  scale_x_continuous(breaks = seq(from=-5, to=5, by=1)) +
+  scale_y_continuous(breaks = seq(from=-2, to=6, by=1), limits = c(-3, 7)) +
+  scale_fill_gradient(low="black", high = "white", limits=c(min(arr), 0.75*max_intensity), guide=F, oob=squish) +
+  xlab("Right-left (world) coordinate") +
+  ylab("Superior-inferior (world) coordinate") +
+  labs(title=glue("Coronal brain slices at {length(slices)} evenly spaced coordinates")) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        panel.border = element_blank(),
+        strip.text = element_blank())
+
+# Define the combined plot layout for the above two plots
+plt_layout <- "
+AAAAAAAAAAAAAAAAAABBBBBBBB
+AAAAAAAAAAAAAAAAAABBBBBBBB
+AAAAAAAAAAAAAAAAAABBBBBBBB
+AAAAAAAAAAAAAAAAAA########
+AAAAAAAAAAAAAAAAAA########
+"
+
+# Combine plots
+plt_output <- plt_slices + plt_locator + plot_layout(design = plt_layout)
+
+# Print the final plot
+print(plt_output)
+
+
+```
+
+\newpage
+# Comparison of volume differences and brain connectivity
+
+## Goal
+
+Plot volume differences in a Serotonin-transporter knockout mouse model, along with viral tracing data for projections that emanate from the dorsal raphe nuclus (the serotonin center of the brain). 
+
+<div class="alert alert-info">
+  <strong>Note:</strong> The previous example showed how to work with world coordinates. The advantage of working with world coordinates is that the plotting does not depend on image resolution, i.e. you can plot images of different resolutions within the same coordinate system and the data should be aligned (if the images themselves are aligned). 
+  This time, we will work with voxel coordinates for simplicity. The code presented can be easily modified to work with world coordinates, as done before.
+</div>
+
+## Ingredients
+
+Libraries:
+
+```{r}
+library(tidyverse)
+library(glue)
+library(RMINC)
+```
+
+Input arguments:
+
+* `background_file`, a path to a .mnc file, corresponding to the background anatomy
+* `mask_file`, a path to a .mnc file, corresponding to a brain mask
+* `stats_file`, a path to a .mnc file, corresponding to the statistics (the output of `mincLm()`/`mincLmer()`/`mincAnova()` etc..., written out by `mincWriteVolume()`)
+* `qvalue_file`, a path to a .mnc file, corresponding to the pvalues adjusted for multiple comparisons ("q-values", the output of `mincFDR()` on the model object)
+* `tracer_file`, a path to a .mnc file, corresponding to the viral tracing data of interest
+* `slices`, a vector of indices, corresponding to slices in voxel coordinates
+
+```{r}
+background_file <- "resources/SERT/SERT_ALL_study_template.mnc"
+mask_file <- "resources/SERT/SERT_ALL_study_mask.mnc"
+stats_file <- "resources/SERT/SERT_ALL_anova_Genotype_Fstat.mnc"
+qvalue_file <- "resources/SERT/SERT_ALL_anova_Genotype_qvalue.mnc"
+tracer_file <- "resources/SERT/ABI_projection_density_maxmerged_DR_Slc6a4-Cre_on_SERT_ALL.mnc"
+slices <- seq(from=230, to=70, by=-20)
+```
+
+## Step 1: Load the data
+
+Load the data.
+
+```{r}
+# Read in the MINC volumes
+bgvol <- mincGetVolume(background_file)
+maskvol <- mincGetVolume(mask_file)
+statsvol <- mincGetVolume(stats_file)
+qvalvol <- mincGetVolume(qvalue_file)
+tracervol <- mincGetVolume(tracer_file)
+
+# Convert to arrays
+bgarray <- mincArray(bgvol)
+maskarray <- mincArray(maskvol)
+statsarray <- mincArray(statsvol)
+qvalarray <- mincArray(qvalvol)
+tracerarray <- mincArray(tracervol)
+```
+
+## Step 2: Generate the contours
+
+Plotting the background anatomy, stats, q-values, and tracer on the same plot can get quite busy. So let's instead use contours for the background, and generate them here.
+
+```{r}
+# Pick a sagittal slice for the contour
+contours_df <- slices %>%
+  map_dfr(
+    function(slice_coordinate) {
+      
+      # Get 2D coronal slices
+      coronal_slice_bg <- bgarray[, slice_coordinate, ]
+      coronal_slice_mask <- maskarray[, slice_coordinate, ]
+      
+      # Remove background from non-brain regions, so that there are no contours here
+      coronal_slice <- coronal_slice_bg
+      coronal_slice[coronal_slice_mask < 0.5] <- 0
+      
+      # Pick the intensities at which to determine the contours
+      contour_levs <- c(200, 500, 1000, 1200, 1250, 1300, 1400, 1450, 1500, 1550, 1600, 1700, 1800)
+      
+      # Use grDevices::contourLines() to get the contours
+      # Returns a list of contour paths
+      coronal_slice_contours <- contourLines(x = seq(from=1, to=dim(coronal_slice)[1], length.out = dim(coronal_slice)[1]), 
+                                             y = seq(from=1, to=dim(coronal_slice)[2], length.out = dim(coronal_slice)[2]), 
+                                             z = coronal_slice, 
+                                             levels = contour_levs)
+      
+      # Contour data comes as a list. Put it into a data frame, index each contour path with a new column (obj), and also index the slice
+      coronal_contours_df <- 1:length(coronal_slice_contours) %>%
+        map(function(i) {as_tibble(coronal_slice_contours[[i]]) %>%
+            mutate(obj=i,
+                   slice=slice_coordinate)}) %>%
+        bind_rows() 
+      
+      # Return dataframe
+      return(coronal_contours_df)
+    }
+  )
+
+# Many contour paths exist. Remove the small ones by filtering out paths with few points
+contours_df <- contours_df %>%
+  group_by(obj, slice) %>%
+  filter(length(level) >= 150) %>%
+  ungroup()
+
+# Examine the contours
+contours_df %>%
+  mutate(slice=factor(slice, levels = slices)) %>%
+  ggplot(aes(x=x, y=y, group=obj)) +
+  geom_path(size=0.2) +
+  facet_wrap(~ slice, nrow=3) +
+  coord_fixed() +
+  scale_color_gradient(name="Intensity level", low = 'grey80', high='grey20') +
+  xlab("Right-left (voxel) coordinate") +
+  ylab("Superior-inferior (voxel) coordinate") +
+  theme_bw()
+```
+
+## Step 3: Add the tracer layer
+
+Add the tracer overlay. Also, we'll use `theme_void()` here.
+
+```{r}
+# Get the tracer slices into a long form data frame
+tracer_df <- slices %>%
+  map_dfr(
+    function(slice_coordinate) {
+      
+      # Get 2D coronal slice for tracer projection density
+      tracer_slice <- tracerarray[, slice_coordinate, ]
+      
+      # Label row and column names for this array according to the world coordinates
+      rownames(tracer_slice) <- as.character(seq(from=1, to=dim(tracer_slice)[1], length.out = dim(tracer_slice)[1]))
+      colnames(tracer_slice) <- as.character(seq(from=1, to=dim(tracer_slice)[2], length.out = dim(tracer_slice)[2]))
+      
+      # Wrangle data to long form
+      out <- tracer_slice %>%
+        as_tibble %>%
+        mutate(x=rownames(tracer_slice)) %>%
+        gather(key = "y", value="projection_density", -one_of("x")) %>%
+        mutate(x=as.numeric(x), 
+               y=as.numeric(y),
+               slice=slice_coordinate)
+      
+      # Return 
+      return(out)
+    }
+  ) %>%
+  mutate(slice=factor(slice, levels = slices)) 
+
+# Plot
+contours_df %>%
+  mutate(slice=factor(slice, levels = slices)) %>%
+  ggplot(aes(x=x, y=y)) +
+  geom_raster(aes(fill=projection_density), 
+              interpolate = T,
+              data=tracer_df) +
+  geom_path(aes(group=obj), size=0.2) +
+  facet_wrap(~ slice, nrow=3) +
+  coord_fixed() +
+  scale_fill_gradient(name="Tracer projection\ndensity",
+                      low = "darkgreen", high="green", na.value = "transparent",
+                      limits=c(0.1, 0.25)) +
+  xlab("Right-left (voxel) coordinate") +
+  ylab("Superior-inferior (voxel) coordinate") +
+  theme_void()
+```
+
+## Step 4: Add the statistics layer
+
+Next, add the statistics layer. Given the relationship between the statistics and p-values, let's combine these two data sources into a single layer, plotting the statistics with a transparency related to the adjusted p-values.
+
+
+
+
+
+
+
+\newpage
+# Comparisons of brain atlases
+
+
+
+
+
+\newpage
+# Deformations of an image registration
+
+\newpage
+# Visualizing image registration quality
+
+\newpage
+# A movie through the brain
+
+\newpage
+# A movie of brain registration
+
+
+
