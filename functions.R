@@ -251,7 +251,8 @@ get_base_grid <- function(gs, # Output of get_grid_sequence()
               file=gs$file,
               grid_space=grid_space,
               slice_axis=slice_axis,
-              slice_axis_coordinate=slice_axis_coordinate)
+              slice_axis_coordinate=slice_axis_coordinate,
+              transformation_info=NA)
   
   # Return
   return(out)
@@ -402,14 +403,17 @@ prepare_anatomy <- function(file, slice_axis, slice_axis_coordinates) {
 #############################
 
 # Visualize grid, and underlying anatomy if df provided
-visualize_grid <- function(grid_df, flip_axes=F) {
+visualize_grid <- function(grid_object, flip_axes=F, filter_grid="none") {
   
-  anatomy_df <- prepare_anatomy(file = grid_df$file, slice_axis=grid_df$slice_axis, slice_axis_coordinates = grid_df$slice_axis_coordinate)$anatomy_df
+  anatomy_df <- prepare_anatomy(file = grid_object$file, 
+                                slice_axis=grid_object$slice_axis, 
+                                slice_axis_coordinates=grid_object$slice_axis_coordinate)$anatomy_df
   
   # Get axes
   all_axes <- c("x", "y", "z")
-  grid_and_line_axes <- sort(setdiff(all_axes, grid_df$slice_axis))
+  grid_and_line_axes <- sort(setdiff(all_axes, grid_object$slice_axis))
   
+  # Flip axes if required
   if (flip_axes) {
     horizontal_axis <- grid_and_line_axes[[2]]
     vertical_axis <- grid_and_line_axes[[1]]
@@ -417,18 +421,32 @@ visualize_grid <- function(grid_df, flip_axes=F) {
     horizontal_axis <- grid_and_line_axes[[1]]
     vertical_axis <- grid_and_line_axes[[2]]
   }
+  
+  # Filter grid if required
+  slice_axis <- grid_object$slice_axis
+  if (filter_grid=="positive") {
+    fg_grid <- grid_object$grid %>% filter(!!sym(slice_axis) >= grid_object$slice_axis_coordinate)
+    fg_box <- grid_object$box %>% filter(!!sym(slice_axis) >= grid_object$slice_axis_coordinate)
+  } else if (filter_grid=="negative") {
+    fg_grid <- grid_object$grid %>% filter(!!sym(slice_axis) <= grid_object$slice_axis_coordinate)
+    fg_box <- grid_object$box %>% filter(!!sym(slice_axis) <= grid_object$slice_axis_coordinate)    
+  } else {
+    fg_grid <- grid_object$grid
+    fg_box <- grid_object$box
+  }
+  
   print(
-    grid_df$grid %>%
+    fg_grid %>%
       ggplot(aes_string(x=horizontal_axis, y=vertical_axis)) + 
       geom_raster(aes(fill=intensity), data=anatomy_df) +
-      geom_point(size=0.05, alpha=0.2) +
+      geom_point(size=0.05, color='red', alpha=0.2) +
       geom_path(aes(group=interaction(grid_axis, gridline)), color='#FF6666', size=0.2, alpha=0.8) +
-      geom_path(aes(group=interaction(grid_axis, gridline)), color='red', size=0.4, alpha=1, data=grid_df$box) +
+      geom_path(aes(group=interaction(grid_axis, gridline)), color='red', size=0.4, alpha=1, data=fg_box) +
       coord_fixed(ratio=1) +
       scale_fill_gradient(low="black", high = "white", limits=quantile(anatomy_df$intensity, c(0.5, 0.99)), oob=squish) +
       xlab(glue("{horizontal_axis}-coordinate (mm)")) +
       ylab(glue("{vertical_axis}-coordinate (mm)")) +
-      labs(title=glue("{horizontal_axis}{vertical_axis}-slice at {grid_df$slice_axis}-coordinate = {grid_df$slice_axis_coordinate} mm")) +
+      labs(title=glue("{horizontal_axis}{vertical_axis}-slice at {grid_object$slice_axis}-coordinate = {grid_object$slice_axis_coordinate} mm")) +
       theme_bw()
   )
 }
@@ -461,7 +479,7 @@ write_tag <- function(df, outfile, clobber=F) {
   # Write points
   prog <- txtProgressBar(max=nrow(df), style=3)
   for (i in 1:nrow(df)) {
-    writeLines(paste0(" ", df$x[i], " ", df$z[i], " ", df$y[i], " ", "\"\""), con = fcon, sep = "\n")
+    writeLines(paste0(" ", df$x[i], " ", df$y[i], " ", df$z[i], " ", "\"\""), con = fcon, sep = "\n")
     setTxtProgressBar(prog, i)
   }
   writeLines(";", con = fcon, sep = "\n")
@@ -475,7 +493,125 @@ write_tag <- function(df, outfile, clobber=F) {
 
 #############################
 
+read_tag <- function(tagfile, transformed=F) {
+  
+  n_lines <- as.integer(strsplit(system(glue("wc -l {tagfile}"), intern = T), " ")[[1]][1])
+  if (transformed) {
+    n_points <- n_lines - 4
+    skip_lines <- 4
+    tag_col_names <- c("V1", "x", "y", "z", "V2", "V3", "V4", "V5")
+  } else {
+    n_points <- n_lines - 5
+    skip_lines <- 4
+    tag_col_names <- c("V1", "x", "y", "z", "V2")
+  }
+  
+
+  out <- read.table(tagfile, 
+                    header=F, 
+                    col.names = tag_col_names, 
+                    sep=" ", 
+                    nrows = n_points,
+                    skip=skip_lines) %>% 
+    select(x,y,z)
+  
+  return(out)
+}
+
+transform_tag <- function(tagfile, xfmfile, outfile, invert=F) {
+  cmd <- glue("transform_tags {tagfile} {xfmfile} {outfile}")
+  if (invert) {
+    cmd <- glue("{cmd} invert")
+  }
+  system(cmd)
+}
+
+transform_grids <- function(base_grid,
+                            xfmfile,
+                            invert=F,
+                            transformed_space=NA,
+                            transformed_file=NA,
+                            tmpdir="/tmp") {
+  
+  # Tempfiles
+  prexfm_grid_tagfile <- tempfile(pattern = "transform_grids-grid-pre-", tmpdir = tmpdir, fileext = ".tag")
+  prexfm_box_tagfile <- tempfile(pattern = "transform_grids-box-pre-", tmpdir = tmpdir, fileext = ".tag")
+  postxfm_grid_tagfile <- tempfile(pattern = "transform_grids-grid-post-", tmpdir = tmpdir, fileext = ".tag")
+  postxfm_box_tagfile <- tempfile(pattern = "transform_grids-box-post-", tmpdir = tmpdir, fileext = ".tag")
+  
+  # Write out tags
+  write_tag(base_grid$grid, prexfm_grid_tagfile, clobber = T)
+  write_tag(base_grid$box, prexfm_box_tagfile, clobber = T)
+  
+  # Transform tags
+  transform_tag(tagfile = prexfm_grid_tagfile, xfmfile = xfmfile, outfile = postxfm_grid_tagfile, invert = invert)
+  transform_tag(tagfile = prexfm_box_tagfile, xfmfile = xfmfile, outfile = postxfm_box_tagfile, invert = invert)
+  
+  # Read tags
+  transformed_grid_tags <- read_tag(postxfm_grid_tagfile, transformed = T)
+  transformed_box_tags <- read_tag(postxfm_box_tagfile, transformed = T)
+  
+  # Cleanup tags
+  file.remove(c(prexfm_grid_tagfile, prexfm_box_tagfile, postxfm_grid_tagfile, postxfm_box_tagfile))
+  
+  # Label tags
+  transformed_grid_df <- base_grid$grid %>%
+    mutate(grid_space=transformed_space) %>%
+    select(-x, -y, -z) %>%
+    cbind(transformed_grid_tags)
+  
+  transformed_box_df <- base_grid$box %>%
+    mutate(grid_space=transformed_space) %>%
+    select(-x, -y, -z) %>%
+    cbind(transformed_box_tags)
+  
+  # Output
+  transformation_info=list(
+    file=transformed_file,
+    xfmfile=xfmfile,
+    invert=invert,
+    pre_xfm_file=base_grid$file,
+    pre_xfm_grid_space=base_grid$grid_space,
+    pre_xfm_slice_axis=base_grid$slice_axis,
+    pre_xfm_slice_axis_coordinate=base_grid$slice_axis_coordinate
+  )
+  
+  out <- list(grid=transformed_grid_df,
+              box=transformed_box_df,
+              file=transformed_file,
+              grid_space=transformed_space,
+              slice_axis=base_grid$slice_axis,
+              slice_axis_coordinate=mean(transformed_grid_df$y),
+              transformation_info=transformation_info)
+  
+  # Return
+  return(out)
+  
+}
+
+get_pipeline_grids <- function() {
+  
+}
+
+#############################
+
 filename <- "resources/HLHS/subject1_native.mnc"
-gs <- get_grid_sequence(file = filename, grid_padding = -0.5, line_points = 100, grid_spacing = 0.5)
-grid_df <- get_base_grid(gs, grid_space = "native", slice_axis = "y", slice_axis_coordinate = -4.9)
-visualize_grid(grid_df, flip_axes = F)
+gs <- get_grid_sequence(file = filename, grid_padding = 0.5, line_points = 100, grid_spacing = 0.5)
+base_grid <- get_base_grid(gs, grid_space = "native", slice_axis = "y", slice_axis_coordinate = -4.9)
+visualize_grid(base_grid, flip_axes = F)
+
+xfmfile <- "resources/HLHS/subject1_lsq6.xfm"
+transformed_space <- "lsq6"
+transformed_file <- "resources/HLHS/subject1_lsq6.mnc"
+
+transformed_grid <- transform_grids(base_grid, xfmfile = xfmfile, invert = F, transformed_space = transformed_space, transformed_file = transformed_file, tmpdir = "tmp")
+visualize_grid(transformed_grid)
+
+a <- transformed_grid$grid %>% rename(y=x, x=y)
+b <- transformed_grid$box %>% rename(y=x, x=y)
+test_grid <- transformed_grid
+test_grid$grid <- a
+test_grid$box <- b
+visualize_grid(test_grid)
+
+transformed_grid$

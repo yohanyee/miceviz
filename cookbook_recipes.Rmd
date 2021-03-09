@@ -1139,7 +1139,7 @@ write_tag <- function(df, outfile, clobber=F) {
   # Write points
   prog <- txtProgressBar(max=nrow(df), style=3)
   for (i in 1:nrow(df)) {
-    writeLines(paste0(" ", df$x[i], " ", df$z[i], " ", df$y[i], " ", "\"\""), con = fcon, sep = "\n")
+    writeLines(paste0(" ", df$x[i], " ", df$y[i], " ", df$z[i], " ", "\"\""), con = fcon, sep = "\n")
     setTxtProgressBar(prog, i)
   }
   writeLines(";", con = fcon, sep = "\n")
