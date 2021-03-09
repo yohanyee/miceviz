@@ -34,6 +34,16 @@ This cookbook contains recipes to create various plots using `ggplot2`. Each rec
   <strong>Note:</strong> the `MRIcrotome` package provides an easier interface for plotting brain slices. Plots can be customized with `ggplot` however.
 </div>
 
+## Data and ggplot
+
+## Get the ingredients
+
+*Install the required packages*
+
+*Download the cookbook ingredients*
+
+## Plot a single brain slice
+
 \newpage
 # Brain slices on a white background
 
@@ -99,6 +109,7 @@ For each slice, convert world coordinates to voxel indices for the slices to be 
 # This is specifically for coronal slices
 # Note: if modifying this code for other dimensions (e.g. sagittal slices), confirm the ordering of these dimensions
 #   - some tools require/output coordinates as x,y,z while others use z,y,x ordering
+#   - for mincConvertWorldToVoxel, the input is x, y, z (relative to Display), and returns voxel coordinates as z, y, x (zero indexed)
 slices_voxel <- slices %>%
   map_dfr(
     function(w) {
@@ -140,7 +151,7 @@ plt_df <- seq_along(slices) %>%
       index <- slices_voxel$index[i]
       
       # Get 2D array corresponding to background intensities
-      coronal_slice_array <- arr[,s,]
+      coronal_slice_array <- arr[,(s+1),]
       
       # Label row and column names for this array according to the world coordinates
       rownames(coronal_slice_array) <- as.character(seq(from=starts[1], to=ends[1], length.out = dim(arr)[1]))
@@ -184,7 +195,7 @@ plt_df %>%
   theme(panel.grid = element_blank())
 ```
 
-## Step 7:  Add a slice locator
+## Step 7: Add a slice locator
 
 We'll take contours from a sagittal slice and mark the positions of the coronal slice. 
 
@@ -332,6 +343,9 @@ Libraries:
 library(tidyverse)
 library(glue)
 library(RMINC)
+library(ggnewscale)
+library(scales)
+library(patchwork)
 ```
 
 Input arguments:
@@ -383,8 +397,8 @@ contours_df <- slices %>%
     function(slice_coordinate) {
       
       # Get 2D coronal slices
-      coronal_slice_bg <- bgarray[, slice_coordinate, ]
-      coronal_slice_mask <- maskarray[, slice_coordinate, ]
+      coronal_slice_bg <- bgarray[, slice_coordinate + 1, ]
+      coronal_slice_mask <- maskarray[, slice_coordinate + 1, ]
       
       # Remove background from non-brain regions, so that there are no contours here
       coronal_slice <- coronal_slice_bg
@@ -442,7 +456,7 @@ tracer_df <- slices %>%
     function(slice_coordinate) {
       
       # Get 2D coronal slice for tracer projection density
-      tracer_slice <- tracerarray[, slice_coordinate, ]
+      tracer_slice <- tracerarray[, slice_coordinate + 1, ]
       
       # Label row and column names for this array according to the world coordinates
       rownames(tracer_slice) <- as.character(seq(from=1, to=dim(tracer_slice)[1], length.out = dim(tracer_slice)[1]))
@@ -481,14 +495,348 @@ contours_df %>%
   theme_void()
 ```
 
-## Step 4: Add the statistics layer
+## Step 4: Read in the stats data
 
-Next, add the statistics layer. Given the relationship between the statistics and p-values, let's combine these two data sources into a single layer, plotting the statistics with a transparency related to the adjusted p-values.
+Read in the statistics (stats map and FDR-adjusted p-value map) and coerce to long format data frame.
+
+```{r}
+# Get stats map into data frame
+stats_df <- slices %>%
+  map_dfr(
+    function(slice_coordinate) {
+      
+      # Get 2D coronal slice for tracer projection density
+      stats_slice <- statsarray[, slice_coordinate + 1, ]
+      
+      # Label row and column names for this array according to the world coordinates
+      rownames(stats_slice) <- as.character(seq(from=1, to=dim(stats_slice)[1], length.out = dim(stats_slice)[1]))
+      colnames(stats_slice) <- as.character(seq(from=1, to=dim(stats_slice)[2], length.out = dim(stats_slice)[2]))
+      
+      # Wrangle data to long form
+      out <- stats_slice %>%
+        as_tibble %>%
+        mutate(x=rownames(stats_slice)) %>%
+        gather(key = "y", value="statistic", -one_of("x")) %>%
+        mutate(x=as.numeric(x), 
+               y=as.numeric(y),
+               slice=slice_coordinate)
+      
+      # Return 
+      return(out)
+    }
+  ) %>%
+  mutate(slice=factor(slice, levels = slices)) 
+
+# Get (adjusted) p-value map into data frame
+qval_df <- slices %>%
+  map_dfr(
+    function(slice_coordinate) {
+      
+      # Get 2D coronal slice for tracer projection density
+      qval_slice <- qvalarray[, slice_coordinate + 1, ]
+      
+      # Label row and column names for this array according to the world coordinates
+      rownames(qval_slice) <- as.character(seq(from=1, to=dim(qval_slice)[1], length.out = dim(qval_slice)[1]))
+      colnames(qval_slice) <- as.character(seq(from=1, to=dim(qval_slice)[2], length.out = dim(qval_slice)[2]))
+      
+      # Wrangle data to long form
+      out <- qval_slice %>%
+        as_tibble %>%
+        mutate(x=rownames(qval_slice)) %>%
+        gather(key = "y", value="qvalue", -one_of("x")) %>%
+        mutate(x=as.numeric(x), 
+               y=as.numeric(y),
+               slice=slice_coordinate)
+      
+      # Return 
+      return(out)
+    }
+  ) %>%
+  mutate(slice=factor(slice, levels = slices)) 
+
+```
+
+## Step 5: Combine stats and p-value data into a single data frame
+
+Given the relationship between the statistics and p-values, let's combine these two data sources into a single layer, plotting the statistics with a transparency related to the adjusted p-values.
+
+```{r}
+# Join data frames
+stats_qval_df <- stats_df %>%
+  left_join(qval_df, by=c("x", "y", "slice"))
+
+# Add a column that maps qvalue to transparency 
+stats_qval_df <- stats_qval_df %>%
+  mutate(qalpha=case_when(
+    qvalue > 0.2 ~ 0,
+    TRUE ~ 0.8*(1 - 5*qvalue))
+  )
+```
 
 
+## Step 6: Add the stats layer
+
+Next, add the statistics layer. Note that by default, you cannot have multiple different colour scales for the same aesthetic type. We're using `ggnewscale` to allow for a different colour scales between the tracer and stats layers. 
+
+```{r}
+contours_df %>%
+  mutate(slice=factor(slice, levels = slices)) %>%
+  ggplot(aes(x=x, y=y)) +
+  geom_raster(aes(fill=projection_density), 
+              interpolate = T,
+              data=tracer_df) +
+  scale_fill_gradient(name="Tracer projection\ndensity",
+                      low = "darkgreen", high="green", na.value = "transparent",
+                      limits=c(0.1, 0.25)) +
+  new_scale_fill() +
+  geom_raster(aes(fill=statistic,
+                  alpha=qalpha), 
+              interpolate = T,
+              data=stats_qval_df) +
+  scale_fill_gradient(name="F-statistic",
+                      low = "white", high="red", na.value = "transparent") +
+  scale_alpha_continuous(guide=F, limits = c(0,1)) +
+  geom_path(aes(group=obj), size=0.2) +
+  facet_wrap(~ slice, nrow=3) +
+  coord_fixed() +
+  xlab("Right-left (voxel) coordinate") +
+  ylab("Superior-inferior (voxel) coordinate") +
+  theme_void()
+```
+
+## Step 7: Add a slice locator
+
+We'll take contours from a sagittal slice and mark the positions of the coronal slice. 
+
+```{r}
+
+# Pick a sagittal slice for the contour
+sagittal_slice_bg <- bgarray[110, , ]
+sagittal_slice_mask <- maskarray[110, , ]
+
+# Remove background from non-brain regions, so that there are no contours here
+sagittal_slice <- sagittal_slice_bg
+sagittal_slice[sagittal_slice_mask < 0.5] <- 0
+
+# Pick the intensities at which to determine the contours
+contour_levs <- c(200, 500, 1000, 1200, 1250, 1300, 1400, 1450, 1500, 1550, 1600, 1700, 1800)
+
+# Use grDevices::contourLines() to get the contours
+# Returns a list of contour paths
+sagittal_contours <- contourLines(x = seq(from=1, to=dim(sagittal_slice)[1], length.out = dim(sagittal_slice)[1]), 
+                                  y = seq(from=1, to=dim(sagittal_slice)[2], length.out = dim(sagittal_slice)[2]), 
+                                  z = sagittal_slice, 
+                                  levels = contour_levs)
+
+# Contour data comes as a list. Put it into a data frame and index each contour path with a new column (obj)
+sagittal_contours_df <- 1:length(sagittal_contours) %>%
+  map(function(i) {as_tibble(sagittal_contours[[i]]) %>%
+      mutate(obj=i)}) %>%
+  bind_rows() 
+
+# Many contour paths exist. Remove the small ones by filtering out paths with few points
+sagittal_contours_df <- sagittal_contours_df %>%
+  group_by(obj) %>%
+  filter(length(level) >= 150) %>%
+  ungroup()
+
+# Plot contours
+sagittal_contours_df %>%
+  ggplot(aes(x=x, y=y, group=obj)) +
+  geom_path(aes(color=level)) +
+  geom_vline(aes(xintercept=world), data=tibble(world=slices), color='red', lty=1, size=1.5) +
+  coord_fixed() +
+  scale_color_gradient(name="Intensity level", low = 'grey80', high='grey20', guide=F) +
+  theme_void()
+
+```
+
+## Step 8: Combine slice locator with plot
+
+Combine the above plots (locator and slice series), with additional code to add labels. 
+
+```{r}
+# Create a dataframe that maps slice index to the label we want
+slice_label_df <- tibble(slice=slices, slice_label=LETTERS[1:length(slices)]) %>%
+  mutate(slice=factor(slice, levels=slices),
+         slice_label=factor(slice_label, levels=LETTERS[1:length(slices)]))
+
+# Plot the locator (slightly modified from before)
+plt_locator <- sagittal_contours_df %>%
+  ggplot(aes(x=x, y=y)) +
+  geom_path(aes(color=level, group=obj)) +
+  geom_vline(aes(xintercept=as.integer(as.character(slice))), data=slice_label_df, color='red', lty=1, size=0.5) +
+  geom_label(aes(x=as.integer(as.character(slice)), y=20, label=slice_label), 
+             hjust=0.5,
+             size=2.5,
+             color='red',
+             data=slice_label_df) +
+  coord_fixed() +
+  scale_color_gradient(name="Intensity level", low = 'grey80', high='grey20', guide=F) +
+  scale_x_reverse() +
+  theme_void()
+
+# Plot the slices (slightly modified from before)
+plt_slices <- contours_df %>%
+  mutate(slice=factor(slice, levels = slices)) %>%
+  ggplot(aes(x=x, y=y)) +
+  geom_raster(aes(fill=projection_density), 
+              interpolate = T,
+              data=tracer_df) +
+  scale_fill_gradient(name="Tracer projection\ndensity",
+                      low = "darkgreen", high="green", na.value = "transparent",
+                      limits=c(0.1, 0.25)) +
+  new_scale_fill() +
+  geom_raster(aes(fill=statistic,
+                  alpha=qalpha), 
+              interpolate = T,
+              data=stats_qval_df) +
+  scale_fill_gradient(name="F-statistic",
+                      low = "white", high="red", na.value = "transparent") +
+  scale_alpha_continuous(guide=F, limits = c(0,1)) +
+  geom_path(aes(group=obj), size=0.2) +
+  geom_label(aes(x=20, y=150, label=slice_label), 
+             hjust=0.5,
+             size=5,
+             color='red',
+             data=slice_label_df) +
+  facet_wrap(~ slice, nrow=3) +
+  coord_fixed() +
+  theme_void() +
+  theme(strip.text = element_blank())
+
+# Define the combined plot layout for the above two plots
+plt_layout <- "
+AAAAAAAAAAAAAAAAAABBBBBBBB
+AAAAAAAAAAAAAAAAAABBBBBBBB
+AAAAAAAAAAAAAAAAAABBBBBBBB
+AAAAAAAAAAAAAAAAAA########
+AAAAAAAAAAAAAAAAAA########
+"
+
+# Combine plots
+plt_output <- plt_slices + plt_locator + plot_layout(design = plt_layout)
+
+# Print the final plot
+print(plt_output)
 
 
+```
 
+## Alternative plot: Separately plot data layers
+
+The plot above is still a bit busy, and the transparency (which allows the tracer data to be seen) also might make determining the statistic difficult. So let's separate the data layers and plot them on their own template, similar to the "traditional" plots generated by `mincPlotSliceSeries()` / `sliceSeries()`.
+
+```{r}
+# Generate data frame for plotting the background
+# Map over each coronal slice
+bg_df <- seq_along(slices) %>%
+  map_dfr(
+    function(i) {
+      
+      # Get slice
+      s <- slices[i]
+      
+      # Get 2D array corresponding to background intensities
+      coronal_bg_array <- bgarray[,s + 1,]
+      coronal_mask_array <- maskarray[,s + 1,]
+      
+      # Fix background 
+      coronal_slice_array <- coronal_bg_array
+      coronal_slice_array[coronal_mask_array < 0.5] <- 1600
+      
+      # Label row and column names for this array according to the world coordinates
+      rownames(coronal_slice_array) <- as.character(seq(from=1, to=dim(coronal_slice_array)[1], length.out = dim(coronal_slice_array)[1]))
+      colnames(coronal_slice_array) <- as.character(seq(from=1, to=dim(coronal_slice_array)[2], length.out = dim(coronal_slice_array)[2]))
+      
+      # Wrangle data to long form
+      out <- coronal_slice_array %>%
+        as_tibble %>%
+        mutate(x=rownames(coronal_slice_array)) %>%
+        gather(key = "y", value="intensity", -one_of("x")) %>%
+        mutate(x=as.numeric(x), 
+               y=as.numeric(y),
+               slice=s)
+      
+      # Return 
+      return(out)
+    }
+  )
+
+# Plot the stats map
+plt_stats <- bg_df %>%
+  mutate(slice=factor(slice, levels = slices)) %>%
+  ggplot(aes(x=x, y=y)) +
+  geom_raster(aes(fill=intensity), interpolate = T) +
+  scale_fill_gradient(low="black", high = "white", limits=c(600, 1600) , oob=squish, guide=F) +
+  new_scale_fill() +
+  geom_raster(aes(fill=statistic, alpha=alpha),
+              interpolate = T,
+              data=stats_qval_df %>%
+                mutate(alpha=case_when(statistic < 10 ~ 0,
+                                       TRUE ~ 0.75))) +
+  scale_fill_gradient(name="F-statistic",
+                      low = "white", high="red", na.value = "transparent",
+                      limits=c(10,50),
+                      oob=squish) +
+  scale_alpha_continuous(range=c(0,1), guide=F) +
+  geom_label(aes(x=20, y=150, label=slice_label), 
+             hjust=0.5,
+             size=3,
+             color='red',
+             data=slice_label_df) +
+  facet_wrap(~ slice, nrow=3) + 
+  coord_fixed() +
+  labs(title="F-statistic associated with Slc6a4 genotype") +
+  theme_void() +
+  theme(strip.text = element_blank())
+
+# Plot the tracer map
+plt_tracer <- bg_df %>%
+  mutate(slice=factor(slice, levels = slices)) %>%
+  ggplot(aes(x=x, y=y)) +
+  geom_raster(aes(fill=intensity), interpolate = T) +
+  scale_fill_gradient(low="black", high = "white", limits=c(600, 1600) , oob=squish, guide=F) +
+  new_scale_fill() +
+  geom_raster(aes(fill=projection_density, alpha=alpha), 
+              interpolate = T,
+              data=tracer_df %>%
+                mutate(alpha=case_when(projection_density < 0.1 ~ 0,
+                                       TRUE ~ 0.75))) +
+  scale_fill_gradient(name="Tracer projection\ndensity",
+                      low = "darkgreen", high="green", na.value = "transparent",
+                      limits=c(0.1, 0.25),
+                      oob=squish) +
+  scale_alpha_continuous(range=c(0,1), guide=F) +
+  geom_label(aes(x=20, y=150, label=slice_label), 
+             hjust=0.5,
+             size=3,
+             color='red',
+             data=slice_label_df) +
+  facet_wrap(~ slice, nrow=3) +
+  coord_fixed() +
+  labs(title="Slc6a4 projections arising from the\nDorsal raphe nucleus") +
+  theme_void() +
+  theme(strip.text = element_blank())
+
+# Define the combined plot layout for the above two plots
+plt_layout <- "
+CCCAAAA
+CCCAAAA
+###AAAA
+###AAAA
+###BBBB
+###BBBB
+###BBBB
+###BBBB
+"
+
+# Combine plots
+plt_output <- plt_stats + plt_tracer + plt_locator + plot_layout(design = plt_layout)
+
+# Print the final plot
+print(plt_output)
+```
 
 
 \newpage
@@ -500,6 +848,426 @@ Next, add the statistics layer. Given the relationship between the statistics an
 
 \newpage
 # Deformations of an image registration
+
+## Goal
+
+Examine the warping of an image in an image registration pipeline by applying a grid and visualizing its deformation in a series of slides. 
+
+Here, we will aim to create a series of images that describe the general principles of the commonly used image registration pipeline. These images can be used in presentations to describe how volume information is obtained from image registration. Specifically, a sequence of images will be generated demonstrating each step of this pipeline.
+
+* Slide 1: 4 brains native
+* Slide 2: 4 brains native w/ lsq6 box on native
+* Slide 3: 4 brains lsq6 w/ lsq6 box
+* Slide 4: 4 brains lsq6 w/ lsq6 box + 1 brain lsq6 zoomed in w/ lsq6 box
+* Slide 5: 4 brains lsq6 w/ lsq6 box + 1 brain lsq6 zoomed in w/ lsq6 box + nlin
+* Slide 6: 4 brains lsq6 w/ lsq6 box + 1 brain lsq6 zoomed in w/ lsq6 box + nlin w/ lsq6 contours
+* Slide 7: 4 brains lsq6 w/ lsq6 grid + 1 brain lsq6 zoomed in w/ lsq6 grid + nlin w/ lsq6 contours w/ lsq6 grid
+* Slide 8: 4 brains nlin w/ nlin grid + 1 brain nlin zoomed in w/ nlin grid + nlin w/ nlin contours w/ nlin grid
+* Slide 9: 4 brains nlin w/ nlin grid + 1 brain nlin zoomed in w/ nlin grid + zoomed in grid + nlin w/ nlin contours w/ nlin grid + zoomed in Jacobian determinant map
+
+## Ingredients
+
+Libraries:
+
+```{r}
+library(tidyverse)
+library(glue)
+library(RMINC)
+library(scales)
+library(patchwork)
+```
+
+Input arguments:
+
+* `native_files`, a path to a .mnc file, corresponding to the input image of a registration (Mice-build-model / PydPiper) pipeline
+* `lsq6_files`
+* `nlin_files`
+* `template_file`, a path to a .mnc file, corresponding to the study (nonlinear) average brain
+* `lsq6_xfms`
+* `lsq6_to_nlin_xfms`
+* `grid_spacing`, 
+* `slice`, a slice index, corresponding to ...
+
+```{r}
+native_files <- paste0("resources/HLHS/subject", c(1,4,28,45), "_native.mnc")
+lsq6_files <- paste0("resources/HLHS/subject", c(1,4,28,45), "_lsq6.mnc")
+nlin_files <- paste0("resources/HLHS/subject", c(1,4,28,45), "_nlin.mnc")
+
+template_file <- "resources/HLHS/study_template.mnc"
+lsq6_xfms <- paste0("resources/HLHS/subject", c(1,4,28,45), "_lsq6.xfm")
+lsq6_to_nlin_xfms <- paste0("resources/HLHS/subject", c(1,4,28,45), "_N_I_lsq6_lsq12_and_nlin.xfm")
+
+lsq6_slice_y_world <- -0.7
+```
+
+## Step 1: Load the data
+
+Load the data.
+
+```{r}
+# Read in the MINC volumes
+native_vols <- native_files %>%
+  map(mincGetVolume)
+lsq6_vols <- lsq6_files %>%
+  map(mincGetVolume)
+nlin_vols <- nlin_files %>%
+  map(mincGetVolume)
+
+template_vol <- mincGetVolume(template_file)
+
+# Convert to arrays
+native_arr <- native_vols %>%
+  map(function(x) {
+    mincArray(x[])
+    })
+lsq6_arr <- lsq6_vols %>%
+  map(function(x) {
+    mincArray(x[])
+    })
+nlin_arr <- nlin_vols %>%
+  map(function(x) {
+    mincArray(x[])
+    })
+
+template_arr <- mincArray(template_vol)
+```
+
+## Step 2: Set grid options and get file dimensions
+
+```{r}
+grid_padding <- 0 # Expansion around FOV, in mm
+grid_spacing <- 0.5    # Spacing between grid lines
+grid_points <- 100  # Points per line
+
+# Get dimension sizes
+native_dims <- minc.dimensions.sizes(native_files[1]) # Returns lengths as z, y, x 
+native_starts <- mincConvertVoxelToWorld(native_files[1], 0, 0, 0) # Input z, y, x; returns as x, y, z
+native_ends <- mincConvertVoxelToWorld(native_files[1], native_dims[1]-1, native_dims[2]-1, native_dims[3]-1) # Input z, y, x; returns as x, y, z
+native_size <- native_ends - native_starts
+
+lsq6_dims <- minc.dimensions.sizes(lsq6_files[1]) # Returns lengths as z, y, x 
+lsq6_starts <- mincConvertVoxelToWorld(lsq6_files[1], 0, 0, 0) # Input z, y, x; returns as x, y, z
+lsq6_ends <- mincConvertVoxelToWorld(lsq6_files[1], lsq6_dims[1]-1, lsq6_dims[2]-1, lsq6_dims[3]-1) # Input z, y, x; returns as x, y, z
+lsq6_size <- lsq6_ends - lsq6_starts
+
+nlin_dims <- minc.dimensions.sizes(nlin_files[1]) # Returns lengths as z, y, x 
+nlin_starts <- mincConvertVoxelToWorld(nlin_files[1], 0, 0, 0) # Input z, y, x; returns as x, y, z
+nlin_ends <- mincConvertVoxelToWorld(nlin_files[1], nlin_dims[1]-1, nlin_dims[2]-1, nlin_dims[3]-1) # Input z, y, x; returns as x, y, z
+nlin_size <- nlin_ends - nlin_starts
+
+# Get lsq6 slice voxel coordinate
+lsq6_slice_y_voxel <- mincConvertWorldToVoxel(lsq6_files[1], 0, lsq6_slice_y_world, 0, nearest_voxel = T)[2]
+
+# Define position of boxlines along each axis
+# Note: set sign for grid padding based on direction of steps
+lsq6_box_sequence <- list(lsq6_x=c((lsq6_starts[1] - grid_padding),
+                                   (lsq6_ends[1] + grid_padding)),
+                          lsq6_y=c((lsq6_starts[2] - grid_padding),
+                                   (lsq6_ends[2] + grid_padding)),
+                          lsq6_z=c((lsq6_starts[3] + grid_padding),
+                                   (lsq6_ends[3] - grid_padding)))
+
+# Define position of gridlines along each axis
+lsq6_grid_sequence <- list(lsq6_x=seq(from=(lsq6_starts[1] - grid_padding), 
+                                      to=(lsq6_ends[1] + grid_padding), 
+                                      by=-grid_spacing),
+                           lsq6_y=seq(from=(lsq6_starts[2] - grid_padding), 
+                                      to=(lsq6_ends[2] + grid_padding), 
+                                      by=-grid_spacing),
+                           lsq6_z=seq(from=(lsq6_starts[3] + grid_padding), 
+                                      to=(lsq6_ends[3] - grid_padding), 
+                                      by=grid_spacing)
+)
+
+# Define position of points along each axis
+lsq6_point_sequence <- list(lsq6_x=seq(from=(lsq6_starts[1] - grid_padding), 
+                                      to=(lsq6_ends[1] + grid_padding), 
+                                      length.out=grid_points),
+                           lsq6_y=seq(from=(lsq6_starts[2] - grid_padding), 
+                                      to=(lsq6_ends[2] + grid_padding), 
+                                      length.out=grid_points),
+                           lsq6_z=seq(from=(lsq6_starts[3] + grid_padding), 
+                                      to=(lsq6_ends[3] - grid_padding), 
+                                      length.out=grid_points)
+)
+```
+
+## Step 3: Compute box in lsq6 space
+
+## Step 4: Compute grids in lsq6 space
+
+```{r}
+# Get point positions along each boxline (within a coronal plane at lsq6_slice_y_world)
+# Compute two tibbles (one for vertical and the other for horizontal boxlines)
+lsq6_box_df <- rbind(1:length(lsq6_box_sequence$lsq6_x) %>%
+                          map_dfr(function(g) {
+                            
+                            # Map over points
+                            1:grid_points %>%
+                              map_dfr(function(i) {
+                                tibble(grid="lsq6", 
+                                       axis="x", 
+                                       gridline=g, 
+                                       x=lsq6_box_sequence$lsq6_x[g], 
+                                       y=lsq6_slice_y_world, 
+                                       z=lsq6_point_sequence$lsq6_z[i])
+                              })
+                            
+                          }),
+                        1:length(lsq6_box_sequence$lsq6_z) %>%
+                          map_dfr(function(g) {
+                            
+                            # Map over points
+                            1:grid_points %>%
+                              map_dfr(function(i) {
+                                tibble(grid="lsq6", 
+                                       axis="z", 
+                                       gridline=g, 
+                                       x=lsq6_point_sequence$lsq6_x[i], 
+                                       y=lsq6_slice_y_world, 
+                                       z=lsq6_box_sequence$lsq6_z[g])
+                              })
+                            
+                          }))
+
+# Get point positions along each gridline (within a coronal plane at lsq6_slice_y_world)
+# Compute two tibbles (one for vertical and the other for horizontal gridlines)
+lsq6_grid_df <- rbind(1:length(lsq6_grid_sequence$lsq6_x) %>%
+                          map_dfr(function(g) {
+                            
+                            # Map over points
+                            1:grid_points %>%
+                              map_dfr(function(i) {
+                                tibble(grid="lsq6", 
+                                       axis="x", 
+                                       gridline=g, 
+                                       x=lsq6_grid_sequence$lsq6_x[g], 
+                                       y=lsq6_slice_y_world, 
+                                       z=lsq6_point_sequence$lsq6_z[i])
+                              })
+                            
+                          }),
+                        1:length(lsq6_grid_sequence$lsq6_z) %>%
+                          map_dfr(function(g) {
+                            
+                            # Map over points
+                            1:grid_points %>%
+                              map_dfr(function(i) {
+                                tibble(grid="lsq6", 
+                                       axis="z", 
+                                       gridline=g, 
+                                       x=lsq6_point_sequence$lsq6_x[i], 
+                                       y=lsq6_slice_y_world, 
+                                       z=lsq6_grid_sequence$lsq6_z[g])
+                              })
+                            
+                          }))
+
+# Let's see what we've just created
+lsq6_grid_df %>%
+  ggplot(aes(x=x, y=z)) +
+  geom_point(size=0.05, alpha=0.2) +
+  geom_path(aes(group=interaction(axis, gridline)), color='grey20', size=0.2, alpha=0.8) +
+  geom_path(aes(group=interaction(axis, gridline)), color='grey20', size=0.2, alpha=0.8, data=lsq6_box_df) +
+  coord_fixed(ratio=1) +
+  scale_x_continuous(breaks=c(seq(from=floor(lsq6_starts[1]), to=ceiling(lsq6_ends[1]), by=-1), lsq6_starts[1], lsq6_ends[1])) +
+  scale_y_continuous(breaks=c(seq(from=ceiling(lsq6_starts[3]), to=floor(lsq6_ends[3]), by=1), lsq6_starts[3], lsq6_ends[3])) +
+  xlab("Right-left coordinate (mm)") +
+  ylab("Superior-inferior coordinate (mm)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+
+# And on top of a brain
+coronal_slice_array <- lsq6_arr[[1]][,lsq6_slice_y_voxel+1,] 
+rownames(coronal_slice_array) <- as.character(seq(from=lsq6_starts[1], to=lsq6_ends[1], length.out = dim(coronal_slice_array)[1]))
+colnames(coronal_slice_array) <- as.character(seq(from=lsq6_starts[3], to=lsq6_ends[3], length.out = dim(coronal_slice_array)[2]))
+coronal_slice_df <- coronal_slice_array %>%
+  as_tibble %>%
+  mutate(x=rownames(coronal_slice_array)) %>%
+  gather(key = "z", value="intensity", -one_of("x")) %>%
+  mutate(x=as.numeric(x), 
+         z=as.numeric(z),
+         coronal_slice_voxel=lsq6_slice_y_voxel,
+         coronal_slice_world=lsq6_slice_y_world)
+
+coronal_slice_df %>%
+  ggplot(aes(x=x, y=z)) +
+  geom_raster(aes(fill=intensity)) +
+  geom_path(aes(group=interaction(axis, gridline)), data=lsq6_grid_df, color='red', size=0.5, alpha=1) +
+  geom_path(aes(group=interaction(axis, gridline)), data=lsq6_box_df, color='red', size=0.5, alpha=1) +
+  coord_fixed(ratio = 1) +
+  scale_fill_gradient(low="black", high = "white", limits=c(600, 2200), oob=squish, guide=F) +
+  scale_x_continuous(breaks=c(seq(from=floor(lsq6_starts[1]), to=ceiling(lsq6_ends[1]), by=-1), lsq6_starts[1], lsq6_ends[1])) +
+  scale_y_continuous(breaks=c(seq(from=ceiling(lsq6_starts[3]), to=floor(lsq6_ends[3]), by=1), lsq6_starts[3], lsq6_ends[3])) +
+  xlab("Right-left coordinate (mm)") +
+  ylab("Superior-inferior coordinate (mm)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+
+```
+
+
+## Step 4: Convert grids and boxes to native and study spaces
+
+```{r}
+# Define function to write tag points
+# Input: a dataframe with points x, y, z
+# Output: an MNI tag file
+write_tag <- function(df, outfile, clobber=F) {
+  
+  # Check file exists
+  if (file.exists(outfile)) {
+    print(glue("Tag file exists: {outfile}"))
+    if (clobber) {
+      print(glue("Overwriting tag file..."))
+    } else {
+      stop("Set clobber=TRUE to overwrite existing tag file")
+    }
+  } else {
+    print(glue("Creating tag file: {outfile}"))
+  }
+
+  # Open connection to file
+  fcon <- file(outfile, open = "wt")
+  
+  # Header
+  writeLines("MNI Tag Point File", con = fcon, sep = "\n")
+  writeLines("Volumes = 1;", con = fcon, sep = "\n")
+  writeLines("", con = fcon, sep = "\n")
+  writeLines("Points =", con = fcon, sep = "\n")
+  
+  # Write points
+  prog <- txtProgressBar(max=nrow(df), style=3)
+  for (i in 1:nrow(df)) {
+    writeLines(paste0(" ", df$x[i], " ", df$z[i], " ", df$y[i], " ", "\"\""), con = fcon, sep = "\n")
+    setTxtProgressBar(prog, i)
+  }
+  writeLines(";", con = fcon, sep = "\n")
+  
+  # Close file connection
+  close(fcon)
+  
+  # Done
+  print(glue("Done writing tag file: {outfile}"))
+}
+
+# Define temporary directory to write tag files
+tmpdir <- "tmp"
+dir.create(tmpdir, showWarnings = T, recursive = F)
+
+# Define pre-transformed tag file paths
+lsq6_grid_tag_file <- glue("{tmpdir}/lsq6_grid.tag")
+lsq6_box_tag_file <- glue("{tmpdir}/lsq6_box.tag") 
+
+# Write out grids and boxes as tag points
+write_tag(df = lsq6_grid_df, outfile = lsq6_grid_tag_file, clobber = T)
+write_tag(df = lsq6_box_df, outfile = lsq6_box_tag_file, clobber = T)
+
+# Loop over subjects
+native_grids <- list()
+native_boxes <- list()
+nlin_grids <- list()
+nlin_boxes <- list()
+for (i in 1:4) {
+
+  # Define post-transformed tag file paths
+  lsq6_grid_on_native_tag_file <- glue("{tmpdir}/lsq6_grid_on_native_{i}.tag")
+  lsq6_grid_on_nlin_tag_file <- glue("{tmpdir}/lsq6_grid_on_nlin_{i}.tag")
+  lsq6_box_on_native_tag_file <- glue("{tmpdir}/lsq6_box_on_native_{i}.tag")
+  lsq6_box_on_nlin_tag_file <- glue("{tmpdir}/lsq6_box_on_nlin_{i}.tag")
+  
+  # Define xfm files
+  lsq6_xfm_file <- lsq6_xfms[i]
+  lsq6_to_nlin_xfm_file <- lsq6_to_nlin_xfms[i]
+
+  # Convert to native space
+  system(glue("transform_tags {lsq6_grid_tag_file} {lsq6_xfm_file} {lsq6_grid_on_native_tag_file} invert"))
+  system(glue("transform_tags {lsq6_box_tag_file} {lsq6_xfm_file} {lsq6_box_on_native_tag_file} invert"))
+  
+  # Convert to study space
+  system(glue("transform_tags {lsq6_grid_tag_file} {lsq6_to_nlin_xfm_file} {lsq6_grid_on_nlin_tag_file}"))
+  system(glue("transform_tags {lsq6_box_tag_file} {lsq6_to_nlin_xfm_file} {lsq6_box_on_nlin_tag_file}"))
+
+  # Convert grid to native space
+  native_grid <- read.table(lsq6_grid_on_native_tag_file, header=F, col.names = c("V1", "x", "y", "z", "V2", "V3", "V4", "V5"), sep=" ", skip=4) %>% select(x,y,z)
+  native_box <- read.table(lsq6_box_on_native_tag_file, header=F, col.names = c("V1", "x", "y", "z", "V2", "V3", "V4", "V5"), sep=" ", skip=4) %>% select(x,y,z)
+
+  # Convert grid to study space
+  nlin_grid <- read.table(lsq6_grid_on_nlin_tag_file, header=F, col.names = c("V1", "x", "y", "z", "V2", "V3", "V4", "V5"), sep=" ", skip=4) %>% select(x,y,z)
+  nlin_box <- read.table(lsq6_box_on_nlin_tag_file, header=F, col.names = c("V1", "x", "y", "z", "V2", "V3", "V4", "V5"), sep=" ", skip=4) %>% select(x,y,z)
+  
+  # Bind grid data
+  native_grids[[i]] <- lsq6_grid_df %>% select(-x, -y, -z) %>% cbind(native_grid)
+  native_boxes[[i]] <- lsq6_grid_df %>% select(-x, -y, -z) %>% cbind(native_box)
+  nlin_grids[[i]] <- lsq6_grid_df %>% select(-x, -y, -z) %>% cbind(nlin_grid)
+  nlin_boxes[[i]] <- lsq6_grid_df %>% select(-x, -y, -z) %>% cbind(nlin_box)
+
+  # Cleanup grids
+  file.remove(c(lsq6_grid_on_native_tag_file,
+                lsq6_grid_on_nlin_tag_file,
+                lsq6_box_on_native_tag_file,
+                lsq6_box_on_nlin_tag_file))
+}
+
+```
+## Step 5: Create slide 1
+
+```{r}
+native_bg_df_list <- 1:4 %>% 
+  map(function(i) {
+    native_slice_y_world <- mean(native_grids[[i]]$y)
+    native_slice_y_voxel <- mincConvertWorldToVoxel(native_files[i], 0, native_slice_y_world, 0)[2]
+    
+    coronal_slice_array <- native_arr[[i]][,native_slice_y_voxel + 1,] 
+    rownames(coronal_slice_array) <- as.character(seq(from=native_starts[1], to=native_ends[1], length.out = dim(coronal_slice_array)[1]))
+    colnames(coronal_slice_array) <- as.character(seq(from=native_starts[3], to=native_ends[3], length.out = dim(coronal_slice_array)[2]))
+    coronal_slice_df <- coronal_slice_array %>%
+      as_tibble %>%
+      mutate(x=rownames(coronal_slice_array)) %>%
+      gather(key = "z", value="intensity", -one_of("x")) %>%
+      mutate(x=as.numeric(x), 
+             z=as.numeric(z),
+             coronal_slice_voxel=native_slice_y_voxel,
+             coronal_slice_world=native_slice_y_world,
+             subject=i)
+  
+    return(coronal_slice_df)
+  })
+
+nlin_bg_df_list <- 1:4 %>% 
+  map(function(i) {
+    nlin_slice_y_world <- mean(native_grids[[i]]$y)
+    nlin_slice_y_voxel <- mincConvertWorldToVoxel(native_files[i], 0, native_slice_y_world, 0)[2]
+    
+    coronal_slice_array <- native_arr[[i]][,native_slice_y_voxel + 1,] 
+    rownames(coronal_slice_array) <- as.character(seq(from=native_starts[1], to=native_ends[1], length.out = dim(coronal_slice_array)[1]))
+    colnames(coronal_slice_array) <- as.character(seq(from=native_starts[3], to=native_ends[3], length.out = dim(coronal_slice_array)[2]))
+    coronal_slice_df <- coronal_slice_array %>%
+      as_tibble %>%
+      mutate(x=rownames(coronal_slice_array)) %>%
+      gather(key = "z", value="intensity", -one_of("x")) %>%
+      mutate(x=as.numeric(x), 
+             z=as.numeric(z),
+             coronal_slice_voxel=native_slice_y_voxel,
+             coronal_slice_world=native_slice_y_world,
+             subject=i)
+  
+    return(coronal_slice_df)
+  })
+
+native_bg_df_list[[4]] %>%
+  ggplot(aes(x=x, y=z)) +
+  geom_raster(aes(fill=intensity)) +
+  geom_path(aes(group=interaction(axis, gridline)), data=native_grids[[4]], color='red', size=0.5, alpha=1) +
+  geom_path(aes(group=interaction(axis, gridline)), data=native_grids[[4]], color='red', size=0.5, alpha=1) +
+  coord_fixed(ratio = 1) +
+  scale_fill_gradient(low="black", high = "white", oob=squish, guide=F) +
+  xlab("Right-left coordinate (mm)") +
+  ylab("Superior-inferior coordinate (mm)") +
+  theme_void()
+
+```
+
 
 \newpage
 # Visualizing image registration quality

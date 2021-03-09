@@ -1,3 +1,10 @@
+library(tidyverse)
+library(glue)
+library(RMINC)
+library(scales)
+
+#############################
+
 get_file_shape <- function(file) {
   
   # Get dimensions of array
@@ -106,7 +113,8 @@ get_grid_sequence <- function(file, grid_padding=-0.5, line_points=100, grid_spa
   )
   
   # Output object
-  out <- list(box_sequence=box_sequence,
+  out <- list(file=file,
+              box_sequence=box_sequence,
               grid_sequence=grid_sequence,
               point_sequence=point_sequence)
   
@@ -240,11 +248,10 @@ get_base_grid <- function(gs, # Output of get_grid_sequence()
   # Output
   out <- list(grid=grid_df,
               box=box_df,
+              file=gs$file,
               grid_space=grid_space,
-              
               slice_axis=slice_axis,
-              grid_axis=grid_axis,
-              line_axis=line_axis)
+              slice_axis_coordinate=slice_axis_coordinate)
   
   # Return
   return(out)
@@ -252,36 +259,181 @@ get_base_grid <- function(gs, # Output of get_grid_sequence()
 
 #############################
 
-prepare_anatomy <- function() {
+get_slice_mappings <- function(file, slice_axis, slice_axis_coordinates) {
+  slices_df <- slice_axis_coordinates %>%
+    map_dfr(
+      function(w) {
+        world_coord <- w
+        switch (slice_axis,
+                x={
+                  voxel_coord <- mincConvertWorldToVoxel(file, w, 0, 0)[3] # Input x,y,z -> returns z, y, x (zero indexed)
+                },
+                y={
+                  voxel_coord <- mincConvertWorldToVoxel(file, 0, w, 0)[2] # Input x,y,z -> returns z, y, x (zero indexed)
+                },
+                z={
+                  voxel_coord <- mincConvertWorldToVoxel(file, 0, 0, w)[1] # Input x,y,z -> returns z, y, x (zero indexed)
+                }
+        )
+        
+        out <- tibble(slice_axis=slice_axis,
+                      world=world_coord, 
+                      voxel=voxel_coord)
+        return(out)
+      }
+    ) %>%
+    arrange(desc(world)) %>%
+    mutate(slice_index=1:nrow(.)) %>%
+    select(slice_axis, slice_index, world, voxel)
   
+  # Return
+  return(slices_df)
+}
+
+
+#############################
+
+prepare_anatomy <- function(file, slice_axis, slice_axis_coordinates) {
+  
+  # Get file shape
+  file_shape <- get_file_shape(file)
+  
+  # Get voxel indices
+  slices_df <- get_slice_mappings(file = file, slice_axis = slice_axis, slice_axis_coordinates = slice_axis_coordinates)
+  
+  # Read in 3D file
+  arr <- mincArray(mincGetVolume(file))
+  
+  # Set dimension names
+  dimnames(arr) <- list(
+    as.character(seq(from=ifelse(file_shape$direction["x"] > 0, file_shape$starts["x"], file_shape$ends["x"]), 
+                     to=ifelse(file_shape$direction["x"] > 0, file_shape$ends["x"], file_shape$starts["x"]), 
+                     length.out = dim(arr)[1])
+    ),
+    as.character(seq(from=ifelse(file_shape$direction["y"] > 0, file_shape$starts["y"], file_shape$ends["y"]), 
+                     to=ifelse(file_shape$direction["y"] > 0, file_shape$ends["y"], file_shape$starts["y"]), 
+                     length.out = dim(arr)[2])
+    ),
+    as.character(seq(from=ifelse(file_shape$direction["z"] > 0, file_shape$starts["z"], file_shape$ends["z"]), 
+                     to=ifelse(file_shape$direction["z"] > 0, file_shape$ends["z"], file_shape$starts["z"]), 
+                     length.out = dim(arr)[3])
+    )
+  )
+  
+  # Get slices
+  anatomy_df <- seq_along(slices_df$slice_index) %>%
+    map_dfr(
+      function(i) {
+        
+        # Get world and voxel coordinates corresponding to slice
+        w <- slices_df$world[i]
+        v <- slices_df$voxel[i]
+        index <- slices_df$slice_index[i]
+        
+        # Get 2D array corresponding to background intensities
+        switch (slice_axis,
+                x={
+                  
+                  # Get slice array
+                  slice_array <- arr[(v + 1),,]
+                  
+                  # Wrangle data to long form
+                  out <- slice_array %>%
+                    as_tibble %>%
+                    mutate(y=rownames(slice_array)) %>%
+                    gather(key = "z", value="intensity", -one_of("y")) %>%
+                    mutate(x=w,
+                           y=as.numeric(y), 
+                           z=as.numeric(z),
+                           slice_voxel=v,
+                           slice_world=w,
+                           slice_index=index)
+                },
+                y={
+                  
+                  # Get slice array
+                  slice_array <- arr[,(v + 1),]
+                  
+                  # Wrangle data to long form
+                  out <- slice_array %>%
+                    as_tibble %>%
+                    mutate(x=rownames(slice_array)) %>%
+                    gather(key = "z", value="intensity", -one_of("x")) %>%
+                    mutate(x=as.numeric(x), 
+                           y=w,
+                           z=as.numeric(z),
+                           slice_voxel=v,
+                           slice_world=w,
+                           slice_index=index)
+                },
+                z={
+                  
+                  # Get slice array
+                  slice_array <- arr[,,(v + 1)]
+                  
+                  # Wrangle data to long form
+                  out <- slice_array %>%
+                    as_tibble %>%
+                    mutate(x=rownames(slice_array)) %>%
+                    gather(key = "y", value="intensity", -one_of("x")) %>%
+                    mutate(x=as.numeric(x), 
+                           y=as.numeric(y),
+                           z=w,
+                           slice_voxel=v,
+                           slice_world=w,
+                           slice_index=index)
+                }
+        )
+        
+
+        
+        # Return 
+        return(out)
+      }
+    )
+  
+  # Return
+  out <- list(file=file,
+              anatomy_df=anatomy_df,
+              slice_axis=slice_axis,
+              slice_axis_coordinates=slice_axis_coordinates)
 }
 
 #############################
 
 # Visualize grid, and underlying anatomy if df provided
-visualize_grid <- function(grid_df) {
+visualize_grid <- function(grid_df, flip_axes=F) {
   
+  anatomy_df <- prepare_anatomy(file = grid_df$file, slice_axis=grid_df$slice_axis, slice_axis_coordinates = grid_df$slice_axis_coordinate)$anatomy_df
+  
+  # Get axes
   all_axes <- c("x", "y", "z")
-  grid_and_line_axes <- setdiff(all_axes, slice_axis)
+  grid_and_line_axes <- sort(setdiff(all_axes, grid_df$slice_axis))
   
-  grid_df$grid
-  
-  grid_df %>%
-    ggplot(aes(x=, y=))
+  if (flip_axes) {
+    horizontal_axis <- grid_and_line_axes[[2]]
+    vertical_axis <- grid_and_line_axes[[1]]
+  } else {
+    horizontal_axis <- grid_and_line_axes[[1]]
+    vertical_axis <- grid_and_line_axes[[2]]
+  }
+  print(
+    grid_df$grid %>%
+      ggplot(aes_string(x=horizontal_axis, y=vertical_axis)) + 
+      geom_raster(aes(fill=intensity), data=anatomy_df) +
+      geom_point(size=0.05, alpha=0.2) +
+      geom_path(aes(group=interaction(grid_axis, gridline)), color='#FF6666', size=0.2, alpha=0.8) +
+      geom_path(aes(group=interaction(grid_axis, gridline)), color='red', size=0.4, alpha=1, data=grid_df$box) +
+      coord_fixed(ratio=1) +
+      scale_fill_gradient(low="black", high = "white", limits=quantile(anatomy_df$intensity, c(0.5, 0.99)), oob=squish) +
+      xlab(glue("{horizontal_axis}-coordinate (mm)")) +
+      ylab(glue("{vertical_axis}-coordinate (mm)")) +
+      labs(title=glue("{horizontal_axis}{vertical_axis}-slice at {grid_df$slice_axis}-coordinate = {grid_df$slice_axis_coordinate} mm")) +
+      theme_bw()
+  )
 }
 
 #############################
-
-gs <- get_grid_sequence(file = file, grid_padding = -0.5, line_points = 100, grid_lines = 20)
-grid_df <- get_base_grid(gs, grid_space = "native", slice_axis = "y", slice_axis_coordinate = 0)
-
-
-
-
-
-  
-  
-
 
 write_tag <- function(df, outfile, clobber=F) {
   
@@ -320,3 +472,10 @@ write_tag <- function(df, outfile, clobber=F) {
   # Done
   print(glue("Done writing tag file: {outfile}"))
 }
+
+#############################
+
+filename <- "resources/HLHS/subject1_native.mnc"
+gs <- get_grid_sequence(file = filename, grid_padding = -0.5, line_points = 100, grid_spacing = 0.5)
+grid_df <- get_base_grid(gs, grid_space = "native", slice_axis = "y", slice_axis_coordinate = -4.9)
+visualize_grid(grid_df, flip_axes = F)
