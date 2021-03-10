@@ -940,6 +940,7 @@ get_pipeline_grids <- function(slice_axis, nlin_slice_axis_coordinate,
                                study_template_file, study_mask_file,
                                native_to_lsq6_xfm, lsq6_to_nlin_xfm,
                                nlin_abs_jd_file,
+                               nlin_contour_levels,
                                grid_padding = 0.5, line_points = 200, grid_spacing = 0.2,
                                highres_grid_lines=12,
                                tmpdir="/tmp", plot_progress=T) {
@@ -985,14 +986,28 @@ get_pipeline_grids <- function(slice_axis, nlin_slice_axis_coordinate,
   cat(glue("[{Sys.time()}] Getting study data \n", .trim=F))
   
   cat(glue("[{Sys.time()}] + Getting study template data \n", .trim=F))
-  study_template_data <- prepare_anatomy(study_template_file, 
-                                         slice_axis = slice_axis, 
-                                         slice_axis_coordinates = nlin_slice_axis_coordinate)
+  study_template_data <- prepare_masked_anatomy(study_template_file, 
+                                                mask_file = study_mask_file,
+                                                slice_axis = slice_axis, 
+                                                slice_axis_coordinates = nlin_slice_axis_coordinate)
   
   cat(glue("[{Sys.time()}] + Getting study mask data \n", .trim=F))
   study_mask_data <- prepare_anatomy(study_mask_file, 
                                      slice_axis = slice_axis, 
                                      slice_axis_coordinates = nlin_slice_axis_coordinate)
+  
+  cat(glue("[{Sys.time()}] + Getting full contour set \n", .trim=F))
+  study_full_contour_data <- prepare_contours(study_template_file, 
+                                              slice_axis = slice_axis, 
+                                              slice_axis_coordinates = nlin_slice_axis_coordinate, 
+                                              contour_levels = nlin_contour_levels)
+  
+  cat(glue("[{Sys.time()}] + Getting masked contour set \n", .trim=F))
+  study_masked_contour_data <- prepare_contours(study_template_file, 
+                                                mask_file = study_mask_file,
+                                                slice_axis = slice_axis, 
+                                                slice_axis_coordinates = nlin_slice_axis_coordinate, 
+                                                contour_levels = nlin_contour_levels)
   
   #############
   # Get Jacobian determinant data
@@ -1245,7 +1260,9 @@ get_pipeline_grids <- function(slice_axis, nlin_slice_axis_coordinate,
   
   study_outputs=list(
     template=study_template_data,
-    mask=study_mask_data
+    mask=study_mask_data,
+    contours=study_full_contour_data,
+    contours_masked=study_masked_contour_data
   )
   
   jd_outputs=list(
@@ -1284,6 +1301,7 @@ study_mask_file = "resources/HLHS/study_mask.mnc"
 native_to_lsq6_xfm = "resources/HLHS/subject1_lsq6.xfm"
 lsq6_to_nlin_xfm = "resources/HLHS/subject1_N_I_lsq6_lsq12_and_nlin.xfm"
 nlin_abs_jd_file = "resources/HLHS/subject1_absjd.mnc"
+nlin_contour_levels <- c(600, 800, 1000, 1500)
 grid_padding = 0.5
 line_points = 200
 grid_spacing = 0.2
@@ -1302,6 +1320,7 @@ study_mask_file = "resources/HLHS/study_mask.mnc"
 native_to_lsq6_xfm = glue("resources/HLHS/{subject}_lsq6.xfm")
 lsq6_to_nlin_xfm = glue("resources/HLHS/{subject}_N_I_lsq6_lsq12_and_nlin.xfm")
 nlin_abs_jd_file = glue("resources/HLHS/{subject}_absjd.mnc")
+nlin_contour_levels <- c(600, 800, 1000, 1500)
 grid_padding = 0.5
 line_points = 200
 grid_spacing = 0.2
@@ -1320,6 +1339,7 @@ study_mask_file = "resources/HLHS/study_mask.mnc"
 native_to_lsq6_xfm = glue("/hpf/largeprojects/MICe/arahman/PhD/CHD_mutants/HLHS_surgical/papertwo_experiments/MRI/MRI_brains/registration_jan132021/hlhs_jan132021_processed/{subject}/transforms/{subject}_lsq6.xfm")
 lsq6_to_nlin_xfm = glue("/hpf/largeprojects/MICe/arahman/PhD/CHD_mutants/HLHS_surgical/papertwo_experiments/MRI/MRI_brains/registration_jan132021/hlhs_jan132021_processed/{subject}/transforms/{subject}_N_I_lsq6_lsq12_and_nlin.xfm")
 nlin_abs_jd_file = glue("/hpf/largeprojects/MICe/arahman/PhD/CHD_mutants/HLHS_surgical/papertwo_experiments/MRI/MRI_brains/registration_jan132021/hlhs_jan132021_processed/{subject}/stats-volumes/{subject}_N_I_lsq6_lsq12_and_nlin_inverted_displ_log_det_abs.mnc")
+nlin_contour_levels <- c(600, 800, 1000, 1500)
 grid_padding = 0.5
 line_points = 200
 grid_spacing = 0.2
@@ -1334,6 +1354,7 @@ dat <- get_pipeline_grids(
   study_template_file = study_template_file, study_mask_file = study_mask_file, 
   native_to_lsq6_xfm = native_to_lsq6_xfm, lsq6_to_nlin_xfm = lsq6_to_nlin_xfm, 
   nlin_abs_jd_file = nlin_abs_jd_file, 
+  nlin_contour_levels = nlin_contour_levels,
   grid_padding = grid_padding, line_points = line_points, grid_spacing = grid_spacing, highres_grid_lines = highres_grid_lines, 
   tmpdir = tmpdir, plot_progress=plot_progress
 )
