@@ -23,6 +23,9 @@ setwd(cwd)
 library(tidyverse)
 library(glue)
 library(RMINC)
+library(scales)
+library(ggnewscale)
+library(patchwork)
 ```
 
 \newpage
@@ -30,19 +33,127 @@ library(RMINC)
 
 This cookbook contains recipes to create various plots using `ggplot2`. Each recipe contains code that can be run independent of other recipes / cookbooks, and should re-create the featured plot given appropriate paths. 
 
+## Get the ingredients
+
+### Install the required packages
+
+You will need the following packages:
+
+* tidyverse
+* glue
+* RMINC
+* scales
+* patchwork
+* ggnewscale
+
+Note that `RMINC` requires the minc-toolkit, and Windows isn't supported. Consider using the [MINC virtual machine](https://github.com/CoBrALab/MINC-VM) (which comes with RMINC preintalled) if you are using Windows.
+
+You can install packages using either `install.packages()`, or if the source code is on Github, via `install_github` from the `devtools` package:
+
+```{r eval=FALSE}
+# tidyverse, glue, and scales are available on CRAN
+install.packages("tidyverse")
+install.packages("glue")
+install.packages("scales")
+ 
+# Other packages are available on Github
+# install.packages("devtools") # Uncomment if you don't have the devtools package and need to run the commands below
+devtools::install_github("thomasp85/patchwork")
+devtools::install_github("eliocamp/ggnewscale")
+devtools::install_github("Mouse-Imaging-Centre/RMINC", upgrade_dependencies = FALSE)
+```
+
+### Download the cookbook ingredients
+
+Data will be provided.
+
+## ggplot2
+
+`ggplot2` is a library for creating 2D plots. Building on the principle that visualizations can be expressed through a "grammar of graphics" (hence the name), `ggplot2` provides a language to build beautiful plots layer by layer, and after some use, you will find this language to be quite intuitive. 
+
+A handy cheatsheet can be found [on GitHub](https://raw.githubusercontent.com/rstudio/cheatsheets/master/data-visualization-2.1.pdf), or if you are using RStudio, by clicking on *Help* > *Cheatsheets* > *Data Visualization with ggplot2*.
+
+The subsections below are a ten minute introduction to plotting data with `ggplot2`.
+
+### Basic plotting, grouping, and positioning
+
+Load the data.
+
+```{r}
+
+```
+
+
+### Quick plotting
+
+```{r}
+
+```
+
+### Layers
+
+```{r}
+
+```
+
+### Facets
+
+```{r}
+
+```
+
+### Stacking layers
+
+```{r}
+
+```
+
+### Scales and coordinates
+
+```{r}
+
+```
+
+### Axis labels and titles
+
+```{r}
+
+```
+
+### Legends
+
+```{r}
+
+```
+
+### Themes
+
+```{r}
+
+```
+
+### Saving plots
+
+```{r}
+
+```
+
+### More layer types
+
+```{r}
+
+```
+
+### Ploting a brain slice
+
+```{r}
+
+```
+
 <div class="alert alert-info">
   <strong>Note:</strong> the `MRIcrotome` package provides an easier interface for plotting brain slices. Plots can be customized with `ggplot` however.
 </div>
 
-## Data and ggplot
-
-## Get the ingredients
-
-*Install the required packages*
-
-*Download the cookbook ingredients*
-
-## Plot a single brain slice
 
 \newpage
 # Brain slices on a white background
@@ -839,8 +950,8 @@ print(plt_output)
 ```
 
 
-\newpage
-# Comparisons of brain atlases
+<!-- \newpage -->
+<!-- # Comparisons of brain atlases -->
 
 
 
@@ -996,287 +1107,17 @@ lsq6_point_sequence <- list(lsq6_x=seq(from=(lsq6_starts[1] - grid_padding),
 
 ## Step 4: Compute grids in lsq6 space
 
-```{r}
-# Get point positions along each boxline (within a coronal plane at lsq6_slice_y_world)
-# Compute two tibbles (one for vertical and the other for horizontal boxlines)
-lsq6_box_df <- rbind(1:length(lsq6_box_sequence$lsq6_x) %>%
-                          map_dfr(function(g) {
-                            
-                            # Map over points
-                            1:grid_points %>%
-                              map_dfr(function(i) {
-                                tibble(grid="lsq6", 
-                                       axis="x", 
-                                       gridline=g, 
-                                       x=lsq6_box_sequence$lsq6_x[g], 
-                                       y=lsq6_slice_y_world, 
-                                       z=lsq6_point_sequence$lsq6_z[i])
-                              })
-                            
-                          }),
-                        1:length(lsq6_box_sequence$lsq6_z) %>%
-                          map_dfr(function(g) {
-                            
-                            # Map over points
-                            1:grid_points %>%
-                              map_dfr(function(i) {
-                                tibble(grid="lsq6", 
-                                       axis="z", 
-                                       gridline=g, 
-                                       x=lsq6_point_sequence$lsq6_x[i], 
-                                       y=lsq6_slice_y_world, 
-                                       z=lsq6_box_sequence$lsq6_z[g])
-                              })
-                            
-                          }))
-
-# Get point positions along each gridline (within a coronal plane at lsq6_slice_y_world)
-# Compute two tibbles (one for vertical and the other for horizontal gridlines)
-lsq6_grid_df <- rbind(1:length(lsq6_grid_sequence$lsq6_x) %>%
-                          map_dfr(function(g) {
-                            
-                            # Map over points
-                            1:grid_points %>%
-                              map_dfr(function(i) {
-                                tibble(grid="lsq6", 
-                                       axis="x", 
-                                       gridline=g, 
-                                       x=lsq6_grid_sequence$lsq6_x[g], 
-                                       y=lsq6_slice_y_world, 
-                                       z=lsq6_point_sequence$lsq6_z[i])
-                              })
-                            
-                          }),
-                        1:length(lsq6_grid_sequence$lsq6_z) %>%
-                          map_dfr(function(g) {
-                            
-                            # Map over points
-                            1:grid_points %>%
-                              map_dfr(function(i) {
-                                tibble(grid="lsq6", 
-                                       axis="z", 
-                                       gridline=g, 
-                                       x=lsq6_point_sequence$lsq6_x[i], 
-                                       y=lsq6_slice_y_world, 
-                                       z=lsq6_grid_sequence$lsq6_z[g])
-                              })
-                            
-                          }))
-
-# Let's see what we've just created
-lsq6_grid_df %>%
-  ggplot(aes(x=x, y=z)) +
-  geom_point(size=0.05, alpha=0.2) +
-  geom_path(aes(group=interaction(axis, gridline)), color='grey20', size=0.2, alpha=0.8) +
-  geom_path(aes(group=interaction(axis, gridline)), color='grey20', size=0.2, alpha=0.8, data=lsq6_box_df) +
-  coord_fixed(ratio=1) +
-  scale_x_continuous(breaks=c(seq(from=floor(lsq6_starts[1]), to=ceiling(lsq6_ends[1]), by=-1), lsq6_starts[1], lsq6_ends[1])) +
-  scale_y_continuous(breaks=c(seq(from=ceiling(lsq6_starts[3]), to=floor(lsq6_ends[3]), by=1), lsq6_starts[3], lsq6_ends[3])) +
-  xlab("Right-left coordinate (mm)") +
-  ylab("Superior-inferior coordinate (mm)") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle=45, hjust=1))
-
-# And on top of a brain
-coronal_slice_array <- lsq6_arr[[1]][,lsq6_slice_y_voxel+1,] 
-rownames(coronal_slice_array) <- as.character(seq(from=lsq6_starts[1], to=lsq6_ends[1], length.out = dim(coronal_slice_array)[1]))
-colnames(coronal_slice_array) <- as.character(seq(from=lsq6_starts[3], to=lsq6_ends[3], length.out = dim(coronal_slice_array)[2]))
-coronal_slice_df <- coronal_slice_array %>%
-  as_tibble %>%
-  mutate(x=rownames(coronal_slice_array)) %>%
-  gather(key = "z", value="intensity", -one_of("x")) %>%
-  mutate(x=as.numeric(x), 
-         z=as.numeric(z),
-         coronal_slice_voxel=lsq6_slice_y_voxel,
-         coronal_slice_world=lsq6_slice_y_world)
-
-coronal_slice_df %>%
-  ggplot(aes(x=x, y=z)) +
-  geom_raster(aes(fill=intensity)) +
-  geom_path(aes(group=interaction(axis, gridline)), data=lsq6_grid_df, color='red', size=0.5, alpha=1) +
-  geom_path(aes(group=interaction(axis, gridline)), data=lsq6_box_df, color='red', size=0.5, alpha=1) +
-  coord_fixed(ratio = 1) +
-  scale_fill_gradient(low="black", high = "white", limits=c(600, 2200), oob=squish, guide=F) +
-  scale_x_continuous(breaks=c(seq(from=floor(lsq6_starts[1]), to=ceiling(lsq6_ends[1]), by=-1), lsq6_starts[1], lsq6_ends[1])) +
-  scale_y_continuous(breaks=c(seq(from=ceiling(lsq6_starts[3]), to=floor(lsq6_ends[3]), by=1), lsq6_starts[3], lsq6_ends[3])) +
-  xlab("Right-left coordinate (mm)") +
-  ylab("Superior-inferior coordinate (mm)") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle=45, hjust=1))
-
-```
 
 
-## Step 4: Convert grids and boxes to native and study spaces
 
-```{r}
-# Define function to write tag points
-# Input: a dataframe with points x, y, z
-# Output: an MNI tag file
-write_tag <- function(df, outfile, clobber=F) {
-  
-  # Check file exists
-  if (file.exists(outfile)) {
-    print(glue("Tag file exists: {outfile}"))
-    if (clobber) {
-      print(glue("Overwriting tag file..."))
-    } else {
-      stop("Set clobber=TRUE to overwrite existing tag file")
-    }
-  } else {
-    print(glue("Creating tag file: {outfile}"))
-  }
+<!-- \newpage -->
+<!-- # Visualizing image registration quality -->
 
-  # Open connection to file
-  fcon <- file(outfile, open = "wt")
-  
-  # Header
-  writeLines("MNI Tag Point File", con = fcon, sep = "\n")
-  writeLines("Volumes = 1;", con = fcon, sep = "\n")
-  writeLines("", con = fcon, sep = "\n")
-  writeLines("Points =", con = fcon, sep = "\n")
-  
-  # Write points
-  prog <- txtProgressBar(max=nrow(df), style=3)
-  for (i in 1:nrow(df)) {
-    writeLines(paste0(" ", df$x[i], " ", df$y[i], " ", df$z[i], " ", "\"\""), con = fcon, sep = "\n")
-    setTxtProgressBar(prog, i)
-  }
-  writeLines(";", con = fcon, sep = "\n")
-  
-  # Close file connection
-  close(fcon)
-  
-  # Done
-  print(glue("Done writing tag file: {outfile}"))
-}
+<!-- \newpage -->
+<!-- # A movie through the brain -->
 
-# Define temporary directory to write tag files
-tmpdir <- "tmp"
-dir.create(tmpdir, showWarnings = T, recursive = F)
-
-# Define pre-transformed tag file paths
-lsq6_grid_tag_file <- glue("{tmpdir}/lsq6_grid.tag")
-lsq6_box_tag_file <- glue("{tmpdir}/lsq6_box.tag") 
-
-# Write out grids and boxes as tag points
-write_tag(df = lsq6_grid_df, outfile = lsq6_grid_tag_file, clobber = T)
-write_tag(df = lsq6_box_df, outfile = lsq6_box_tag_file, clobber = T)
-
-# Loop over subjects
-native_grids <- list()
-native_boxes <- list()
-nlin_grids <- list()
-nlin_boxes <- list()
-for (i in 1:4) {
-
-  # Define post-transformed tag file paths
-  lsq6_grid_on_native_tag_file <- glue("{tmpdir}/lsq6_grid_on_native_{i}.tag")
-  lsq6_grid_on_nlin_tag_file <- glue("{tmpdir}/lsq6_grid_on_nlin_{i}.tag")
-  lsq6_box_on_native_tag_file <- glue("{tmpdir}/lsq6_box_on_native_{i}.tag")
-  lsq6_box_on_nlin_tag_file <- glue("{tmpdir}/lsq6_box_on_nlin_{i}.tag")
-  
-  # Define xfm files
-  lsq6_xfm_file <- lsq6_xfms[i]
-  lsq6_to_nlin_xfm_file <- lsq6_to_nlin_xfms[i]
-
-  # Convert to native space
-  system(glue("transform_tags {lsq6_grid_tag_file} {lsq6_xfm_file} {lsq6_grid_on_native_tag_file} invert"))
-  system(glue("transform_tags {lsq6_box_tag_file} {lsq6_xfm_file} {lsq6_box_on_native_tag_file} invert"))
-  
-  # Convert to study space
-  system(glue("transform_tags {lsq6_grid_tag_file} {lsq6_to_nlin_xfm_file} {lsq6_grid_on_nlin_tag_file}"))
-  system(glue("transform_tags {lsq6_box_tag_file} {lsq6_to_nlin_xfm_file} {lsq6_box_on_nlin_tag_file}"))
-
-  # Convert grid to native space
-  native_grid <- read.table(lsq6_grid_on_native_tag_file, header=F, col.names = c("V1", "x", "y", "z", "V2", "V3", "V4", "V5"), sep=" ", skip=4) %>% select(x,y,z)
-  native_box <- read.table(lsq6_box_on_native_tag_file, header=F, col.names = c("V1", "x", "y", "z", "V2", "V3", "V4", "V5"), sep=" ", skip=4) %>% select(x,y,z)
-
-  # Convert grid to study space
-  nlin_grid <- read.table(lsq6_grid_on_nlin_tag_file, header=F, col.names = c("V1", "x", "y", "z", "V2", "V3", "V4", "V5"), sep=" ", skip=4) %>% select(x,y,z)
-  nlin_box <- read.table(lsq6_box_on_nlin_tag_file, header=F, col.names = c("V1", "x", "y", "z", "V2", "V3", "V4", "V5"), sep=" ", skip=4) %>% select(x,y,z)
-  
-  # Bind grid data
-  native_grids[[i]] <- lsq6_grid_df %>% select(-x, -y, -z) %>% cbind(native_grid)
-  native_boxes[[i]] <- lsq6_grid_df %>% select(-x, -y, -z) %>% cbind(native_box)
-  nlin_grids[[i]] <- lsq6_grid_df %>% select(-x, -y, -z) %>% cbind(nlin_grid)
-  nlin_boxes[[i]] <- lsq6_grid_df %>% select(-x, -y, -z) %>% cbind(nlin_box)
-
-  # Cleanup grids
-  file.remove(c(lsq6_grid_on_native_tag_file,
-                lsq6_grid_on_nlin_tag_file,
-                lsq6_box_on_native_tag_file,
-                lsq6_box_on_nlin_tag_file))
-}
-
-```
-## Step 5: Create slide 1
-
-```{r}
-native_bg_df_list <- 1:4 %>% 
-  map(function(i) {
-    native_slice_y_world <- mean(native_grids[[i]]$y)
-    native_slice_y_voxel <- mincConvertWorldToVoxel(native_files[i], 0, native_slice_y_world, 0)[2]
-    
-    coronal_slice_array <- native_arr[[i]][,native_slice_y_voxel + 1,] 
-    rownames(coronal_slice_array) <- as.character(seq(from=native_starts[1], to=native_ends[1], length.out = dim(coronal_slice_array)[1]))
-    colnames(coronal_slice_array) <- as.character(seq(from=native_starts[3], to=native_ends[3], length.out = dim(coronal_slice_array)[2]))
-    coronal_slice_df <- coronal_slice_array %>%
-      as_tibble %>%
-      mutate(x=rownames(coronal_slice_array)) %>%
-      gather(key = "z", value="intensity", -one_of("x")) %>%
-      mutate(x=as.numeric(x), 
-             z=as.numeric(z),
-             coronal_slice_voxel=native_slice_y_voxel,
-             coronal_slice_world=native_slice_y_world,
-             subject=i)
-  
-    return(coronal_slice_df)
-  })
-
-nlin_bg_df_list <- 1:4 %>% 
-  map(function(i) {
-    nlin_slice_y_world <- mean(native_grids[[i]]$y)
-    nlin_slice_y_voxel <- mincConvertWorldToVoxel(native_files[i], 0, native_slice_y_world, 0)[2]
-    
-    coronal_slice_array <- native_arr[[i]][,native_slice_y_voxel + 1,] 
-    rownames(coronal_slice_array) <- as.character(seq(from=native_starts[1], to=native_ends[1], length.out = dim(coronal_slice_array)[1]))
-    colnames(coronal_slice_array) <- as.character(seq(from=native_starts[3], to=native_ends[3], length.out = dim(coronal_slice_array)[2]))
-    coronal_slice_df <- coronal_slice_array %>%
-      as_tibble %>%
-      mutate(x=rownames(coronal_slice_array)) %>%
-      gather(key = "z", value="intensity", -one_of("x")) %>%
-      mutate(x=as.numeric(x), 
-             z=as.numeric(z),
-             coronal_slice_voxel=native_slice_y_voxel,
-             coronal_slice_world=native_slice_y_world,
-             subject=i)
-  
-    return(coronal_slice_df)
-  })
-
-native_bg_df_list[[4]] %>%
-  ggplot(aes(x=x, y=z)) +
-  geom_raster(aes(fill=intensity)) +
-  geom_path(aes(group=interaction(axis, gridline)), data=native_grids[[4]], color='red', size=0.5, alpha=1) +
-  geom_path(aes(group=interaction(axis, gridline)), data=native_grids[[4]], color='red', size=0.5, alpha=1) +
-  coord_fixed(ratio = 1) +
-  scale_fill_gradient(low="black", high = "white", oob=squish, guide=F) +
-  xlab("Right-left coordinate (mm)") +
-  ylab("Superior-inferior coordinate (mm)") +
-  theme_void()
-
-```
-
-
-\newpage
-# Visualizing image registration quality
-
-\newpage
-# A movie through the brain
-
-\newpage
-# A movie of brain registration
+<!-- \newpage -->
+<!-- # A movie of brain registration -->
 
 
 
