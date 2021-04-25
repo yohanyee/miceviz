@@ -80,79 +80,505 @@ The subsections below are a ten minute introduction to plotting data with `ggplo
 Load the data.
 
 ```{r}
+# Output of anatGetAll() bound with subject metadata
+# From Lindenmaier et al. (2021)
+# Thanks Zsu for providing this
+# Ignore duplicated column warning for now
+df <- read_csv("resources/Lindenmaier_2021_NeuroImage_AndR_absvols.csv")
 
+# Example of getting whole brain volumes using dplyr
+whole_brain_volume <- df %>% 
+  select(-Project, -ID, -StrainW, -Genotype, -Sex, -Unique) %>%
+  rowSums()
+
+df <- df %>%
+  mutate(whole_brain_volume=whole_brain_volume) %>%
+  select(Project:Unique, whole_brain_volume, everything())
+
+print(df)
 ```
-
 
 ### Quick plotting
 
+`ggplot` takes in a data frame and plots data points (rows) as geometric objects, using the `aes()` function to map columns to each part of the plot. Let's look at the distribution of whole brain volumes in this dataset.
+
 ```{r}
+
+# Start by calling ggplot and mapping whole brain volume to the y-axis
+# This will plot nothing for now
+ggplot(data = df, mapping = aes(y=whole_brain_volume))
+
+# We need to tell ggplot to add points on top
+# Add geom_point(). geom_point() plots points at an x,y location and thus requires both
+ggplot(data = df, mapping = aes(y=whole_brain_volume)) + geom_point(x=0.5)
+
+# Location can be factor, rather than continuous
+# Here, let's use genotype
+# Since we're getting this information from the data frame (i.e. the genotype depends on the point / mouse, and is different between rows in the data frame),
+#   we need to wrap it in aes()
+ggplot(data = df, mapping = aes(y=whole_brain_volume)) + geom_point(mapping = aes(x=Genotype))
+
+# geom_point() / additional layers inherit data from the ggplot() object if nothing specified, this can be overwridden
+ggplot(data = df, mapping = aes(x=Genotype, y=whole_brain_volume)) + geom_point()
+ggplot(data = df, mapping = aes(x=Genotype, y=whole_brain_volume)) + geom_point(mapping = aes(x=Sex))
+
+# Similarly, data can also be manually specified
+# Sample only 5 points and plot
+# Sampling can be helpful when prototyping plots with many points (e.g. millions of voxels in the brain)
+ggplot(data = df, mapping = aes(x=Genotype, y=whole_brain_volume)) + geom_point(data = df %>% sample_n(5))
+
+# Data can also be piped into ggplot, and code organized between lines
+# so that the code is readable
+df %>%
+  ggplot(mapping = aes(x=Genotype, y=whole_brain_volume)) + 
+  geom_point()
+
+# And the plot can be made readable too, by jittering points
+# In this case, we only want to jitter in the x (width)-direction to avoid overlaps, but not in the y (height)-direction, so that
+#   the data are not changed
+df %>%
+  ggplot(mapping = aes(x=Genotype, y=whole_brain_volume)) + 
+  geom_point(position=position_jitter(width = 0.2, height=0))
+
+# Jittering is random and changes if called again
+df %>%
+  ggplot(mapping = aes(x=Genotype, y=whole_brain_volume)) + 
+  geom_point(position=position_jitter(width = 0.2, height=0))
+
+# We can also further map variables to colour
+df %>%
+  ggplot(mapping = aes(x=Genotype, y=whole_brain_volume, color=Sex)) + 
+  geom_point(position=position_jitter(width = 0.2, height=0))
+
+# And dodge the points
+df %>%
+  ggplot(mapping = aes(x=Genotype, y=whole_brain_volume, color=Sex)) + 
+  geom_point(position=position_jitterdodge(jitter.width = 0.2, jitter.height=0, dodge.width = 0.5))
 
 ```
 
 ### Layers
 
+There exist many other ways to plot these distributions by changing very few things:
+
 ```{r}
 
+# Boxplot
+df %>%
+  ggplot(mapping = aes(x=Genotype, y=whole_brain_volume)) +
+  geom_boxplot()
+
+# Dotplot
+# Bins of 5 units in the y-axis
+df %>%
+  ggplot(mapping = aes(x=Genotype, y=whole_brain_volume)) +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 5)
+
+# Violin plot
+df %>%
+  ggplot(mapping = aes(x=Genotype, y=whole_brain_volume)) +
+  geom_violin()
+
+# Violin plot but with points, using a function from the ggforce package
+df %>%
+  ggplot(mapping = aes(x=Genotype, y=whole_brain_volume)) +
+  ggforce::geom_sina()
+
+# Bar plot
+df %>%
+  group_by(Genotype) %>%
+  summarize(mean_wbv=mean(whole_brain_volume)) %>%
+  ungroup %>%
+  ggplot(mapping = aes(x=Genotype, y=mean_wbv)) +
+  geom_bar(stat = 'identity')
+
+# Histogram
+df %>%
+  ggplot(mapping = aes(x=whole_brain_volume, fill=Genotype)) +
+  geom_histogram()
+  
+# Density
+df %>%
+  ggplot(mapping = aes(x=whole_brain_volume, fill=Genotype)) +
+  geom_density(alpha=0.5)
+  
+```
+
+### Quick plotting
+
+Let's look at how the volume of the midbrain scales with whole brain volume. Normally you would plot
+
+```{r}
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point()
+```
+
+A quick interface to plotting points is the `qplot()` function:
+
+```{r}
+qplot(x=whole_brain_volume, y=midbrain, data = df)
 ```
 
 ### Facets
 
+Data can be split across multiple panels. 
+
 ```{r}
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point() +
+  facet_wrap(~ Sex)
+```
+
+Suppose we want to show multiple panels but for different structures (columns) in the dataset. How do we facet by columns? Answer: `gather()` the data into "long" form. To keep things simple, let's do this for four structures: left and right thalamus, midbrain, and pons
+
+```{r}
+# Only select columns of interest
+df_selected <- df %>%
+  select(Project:whole_brain_volume, ends_with("_thalamus"), midbrain, pons)
+
+# Gather into long form
+df_selected_long <- df_selected %>%
+  gather(key = "Structure", value = "Volume", ends_with("_thalamus"), midbrain, pons)
+
+# Facet by Structure now
+# Set scales="free" otherwise the same x and y axes will be used for all plots, which isn't wanted since the structures differ in volume
+df_selected_long %>%
+  ggplot(aes(y=Volume, x=whole_brain_volume)) +
+  geom_point() +
+  facet_wrap(~ Structure, scales = "free")
+
+# Can facet by multiple variables
+df_selected_long %>%
+  ggplot(aes(y=Volume, x=whole_brain_volume)) +
+  geom_point() +
+  facet_wrap(~ Structure + Sex, scales = "free")
+
+# And organize into a grid
+df_selected_long %>%
+  ggplot(aes(y=Volume, x=whole_brain_volume)) +
+  geom_point() +
+  facet_wrap(~ Structure + Sex, scales = "free", nrow=4)
+
+# Or facet by two variables, in a grid:
+df_selected_long %>%
+  ggplot(aes(y=Volume, x=whole_brain_volume)) +
+  geom_point() +
+  facet_grid(Sex ~ Structure)
 
 ```
 
+
 ### Stacking layers
 
-```{r}
+We can stack multiple layers:
 
+```{r}
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point() +
+  geom_smooth(method='lm', formula = y ~ x) +
+  facet_wrap(~ Sex)
+```
+
+And layer order matters.
+
+```{r}
+# Bring points to the front of the line
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_smooth(method='lm', formula = y ~ x) +
+  geom_point() +
+  facet_wrap(~ Sex)
 ```
 
 ### Scales and coordinates
 
-```{r}
-
-```
-
-### Axis labels and titles
+Scales can be modified
 
 ```{r}
+# Reverse x axis scale
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_smooth(method='lm', formula = y ~ x) +
+  geom_point() +
+  facet_wrap(~ Sex) +
+  scale_x_reverse()
 
+# Manual colour scale while keeping reversed x scale
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_smooth(method='lm', formula = y ~ x) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_reverse() +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'))
 ```
 
-### Legends
+### Labels, titles, and legends
+
+Many more things in the plot can be modified:
 
 ```{r}
+# Axis breaks
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'))
+  
+# Axis titles
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20), name="Whole brain volume") +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5), name="Midbrain") +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'))
 
+# Axis limits
+# Note the warning when points are outside these limits
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20), name="Whole brain volume") +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5), name="Midbrain volume", limits=c(12,15)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'))
+  
+# Can also specify labels and limits outside scales
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40')) +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  ylim(12, 15) 
+
+# Plot title
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40')) +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag")
+
+# Legend title
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'), name="Manual\nlegend title") +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag")
+
+# Remove legend
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'), name="Manual\nlegend title", guide=F) +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag")
+  
 ```
+
 
 ### Themes
 
-```{r}
+Various themes can be used:
 
+```{r}
+# Dark
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'), name="Manual\nlegend title", guide=F) +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag") +
+  theme_dark()
+
+# Black and white
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'), name="Manual\nlegend title", guide=F) +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag") +
+  theme_bw()
+
+# Classic
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'), name="Manual\nlegend title", guide=F) +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag") +
+  theme_classic()
+
+# Linedraw
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'), name="Manual\nlegend title", guide=F) +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag") +
+  theme_linedraw()
+
+# Void
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'), name="Manual\nlegend title", guide=F) +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag") +
+  theme_void()
+```
+
+Theme elements can be manually specified:
+
+```{r}
+# Note: must specify manual elements after adding a theme, otherwise that theme will override manual specifications
+df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'), name="Manual\nlegend title") +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag") +
+  theme_bw() +
+  theme(axis.title = element_text(size=14),
+        axis.text.x = element_text(angle=45, hjust=1),
+        legend.position = "bottom")
 ```
 
 ### Saving plots
 
-```{r}
-
-```
-
-### More layer types
+Plots can be saved to disk. For publication plots, use 90 dpi or more. 
 
 ```{r}
+# First set as variable
+plt <- df %>%
+  ggplot(aes(y=midbrain, x=whole_brain_volume)) +
+  geom_point(aes(color=Genotype)) +
+  facet_wrap(~ Sex) +
+  scale_x_continuous(breaks=seq(from=400, to=520, by=20)) +
+  scale_y_continuous(breaks=seq(from=11, to=17, by=0.5)) +
+  scale_color_manual(values=c('#FFAAAA', 'red', 'grey40'), name="Manual\nlegend title") +
+  xlab("Whole brain volume") +
+  ylab("Midbrain volume") + 
+  labs(title = "Title", subtitle = "Subtitle", caption = "Caption", tag = "Tag") +
+  theme_bw() +
+  theme(axis.title = element_text(size=14),
+        axis.text.x = element_text(angle=45, hjust=1),
+        legend.position = "bottom")
+
+# Save via ggsave
+ggsave(plot = plt, filename = "example_plot_ggsave.png", device = png(), dpi = 90, width=6, height = 4, units = "in")
+
+# Save by printing to device
+png(filename = "example_plot_pngdevice.png", width = 2000, height = 1000, res = 150)
+print(plt)
+dev.off()
 
 ```
 
 ### Ploting a brain slice
 
-```{r}
-
-```
-
 <div class="alert alert-info">
   <strong>Note:</strong> the `MRIcrotome` package provides an easier interface for plotting brain slices. Plots can be customized with `ggplot` however.
 </div>
+
+```{r}
+
+# Get files
+DSURQE_average <- glue("resources/DSURQE_40micron_average.mnc")
+DSURQE_labels <- glue("resources/DSURQE_40micron_labels.mnc")
+
+# Read in data as an array
+bgarray <- mincArray(mincGetVolume(DSURQE_average))[80:160,204,120:180] 
+atlasarray <- mincArray(mincGetVolume(DSURQE_labels))[80:160,204,120:180]
+
+# Set row and column names
+bgarray <- bgarray %>% `dimnames<-`(list(as.character(80:160), as.character(120:180)))
+atlasarray <- atlasarray %>% `dimnames<-`(list(as.character(80:160), as.character(120:180)))
+
+# Convert data to long form for plotting
+bgdf <- bgarray %>%
+  as_tibble %>%
+  mutate(x=rownames(bgarray)) %>%
+  gather(z, intensity, -x) %>%
+  mutate(x=as.numeric(x),
+         z=as.numeric(z))
+
+atlasdf <- atlasarray %>%
+  as_tibble %>%
+  mutate(x=rownames(atlasarray)) %>%
+  gather(z, label, -x) %>%
+  mutate(x=as.numeric(x),
+         z=as.numeric(z))
+
+# Plot
+bgdf %>%
+  ggplot(aes(x=x, y=z)) +
+  geom_raster(aes(fill=intensity), interpolate = T) +
+  scale_fill_gradient(low="black", high="white", limits=c(800, 1800), oob=squish, guide=F) +
+  new_scale_fill() +
+  geom_raster(aes(fill=factor(label)), 
+              alpha=0.2,
+              interpolate = F, 
+              data=atlasdf %>%
+                filter(label %in% c(327, 329, 331))) +
+  scale_fill_brewer(palette = "Spectral", name="Label", labels=c("MoDG", "GrDG", "PoDG")) +
+  coord_fixed() + 
+  xlab("x-coordinate (voxel index)") +
+  ylab("z-coordinate (voxel index)") +
+  labs(title="Anatomy",
+       subtitle = "with a bunch of hippocampal labels") +
+  theme_void()
+
+```
+
+
 
 
 \newpage
@@ -953,162 +1379,8 @@ print(plt_output)
 <!-- \newpage -->
 <!-- # Comparisons of brain atlases -->
 
-
-
-
-
-\newpage
-# Deformations of an image registration
-
-## Goal
-
-Examine the warping of an image in an image registration pipeline by applying a grid and visualizing its deformation in a series of slides. 
-
-Here, we will aim to create a series of images that describe the general principles of the commonly used image registration pipeline. These images can be used in presentations to describe how volume information is obtained from image registration. Specifically, a sequence of images will be generated demonstrating each step of this pipeline.
-
-* Slide 1: 4 brains native
-* Slide 2: 4 brains native w/ lsq6 box on native
-* Slide 3: 4 brains lsq6 w/ lsq6 box
-* Slide 4: 4 brains lsq6 w/ lsq6 box + 1 brain lsq6 zoomed in w/ lsq6 box
-* Slide 5: 4 brains lsq6 w/ lsq6 box + 1 brain lsq6 zoomed in w/ lsq6 box + nlin
-* Slide 6: 4 brains lsq6 w/ lsq6 box + 1 brain lsq6 zoomed in w/ lsq6 box + nlin w/ lsq6 contours
-* Slide 7: 4 brains lsq6 w/ lsq6 grid + 1 brain lsq6 zoomed in w/ lsq6 grid + nlin w/ lsq6 contours w/ lsq6 grid
-* Slide 8: 4 brains nlin w/ nlin grid + 1 brain nlin zoomed in w/ nlin grid + nlin w/ nlin contours w/ nlin grid
-* Slide 9: 4 brains nlin w/ nlin grid + 1 brain nlin zoomed in w/ nlin grid + zoomed in grid + nlin w/ nlin contours w/ nlin grid + zoomed in Jacobian determinant map
-
-## Ingredients
-
-Libraries:
-
-```{r}
-library(tidyverse)
-library(glue)
-library(RMINC)
-library(scales)
-library(patchwork)
-```
-
-Input arguments:
-
-* `native_files`, a path to a .mnc file, corresponding to the input image of a registration (Mice-build-model / PydPiper) pipeline
-* `lsq6_files`
-* `nlin_files`
-* `template_file`, a path to a .mnc file, corresponding to the study (nonlinear) average brain
-* `lsq6_xfms`
-* `lsq6_to_nlin_xfms`
-* `grid_spacing`, 
-* `slice`, a slice index, corresponding to ...
-
-```{r}
-native_files <- paste0("resources/HLHS/subject", c(1,4,28,45), "_native.mnc")
-lsq6_files <- paste0("resources/HLHS/subject", c(1,4,28,45), "_lsq6.mnc")
-nlin_files <- paste0("resources/HLHS/subject", c(1,4,28,45), "_nlin.mnc")
-
-template_file <- "resources/HLHS/study_template.mnc"
-lsq6_xfms <- paste0("resources/HLHS/subject", c(1,4,28,45), "_lsq6.xfm")
-lsq6_to_nlin_xfms <- paste0("resources/HLHS/subject", c(1,4,28,45), "_N_I_lsq6_lsq12_and_nlin.xfm")
-
-lsq6_slice_y_world <- -0.7
-```
-
-## Step 1: Load the data
-
-Load the data.
-
-```{r}
-# Read in the MINC volumes
-native_vols <- native_files %>%
-  map(mincGetVolume)
-lsq6_vols <- lsq6_files %>%
-  map(mincGetVolume)
-nlin_vols <- nlin_files %>%
-  map(mincGetVolume)
-
-template_vol <- mincGetVolume(template_file)
-
-# Convert to arrays
-native_arr <- native_vols %>%
-  map(function(x) {
-    mincArray(x[])
-    })
-lsq6_arr <- lsq6_vols %>%
-  map(function(x) {
-    mincArray(x[])
-    })
-nlin_arr <- nlin_vols %>%
-  map(function(x) {
-    mincArray(x[])
-    })
-
-template_arr <- mincArray(template_vol)
-```
-
-## Step 2: Set grid options and get file dimensions
-
-```{r}
-grid_padding <- 0 # Expansion around FOV, in mm
-grid_spacing <- 0.5    # Spacing between grid lines
-grid_points <- 100  # Points per line
-
-# Get dimension sizes
-native_dims <- minc.dimensions.sizes(native_files[1]) # Returns lengths as z, y, x 
-native_starts <- mincConvertVoxelToWorld(native_files[1], 0, 0, 0) # Input z, y, x; returns as x, y, z
-native_ends <- mincConvertVoxelToWorld(native_files[1], native_dims[1]-1, native_dims[2]-1, native_dims[3]-1) # Input z, y, x; returns as x, y, z
-native_size <- native_ends - native_starts
-
-lsq6_dims <- minc.dimensions.sizes(lsq6_files[1]) # Returns lengths as z, y, x 
-lsq6_starts <- mincConvertVoxelToWorld(lsq6_files[1], 0, 0, 0) # Input z, y, x; returns as x, y, z
-lsq6_ends <- mincConvertVoxelToWorld(lsq6_files[1], lsq6_dims[1]-1, lsq6_dims[2]-1, lsq6_dims[3]-1) # Input z, y, x; returns as x, y, z
-lsq6_size <- lsq6_ends - lsq6_starts
-
-nlin_dims <- minc.dimensions.sizes(nlin_files[1]) # Returns lengths as z, y, x 
-nlin_starts <- mincConvertVoxelToWorld(nlin_files[1], 0, 0, 0) # Input z, y, x; returns as x, y, z
-nlin_ends <- mincConvertVoxelToWorld(nlin_files[1], nlin_dims[1]-1, nlin_dims[2]-1, nlin_dims[3]-1) # Input z, y, x; returns as x, y, z
-nlin_size <- nlin_ends - nlin_starts
-
-# Get lsq6 slice voxel coordinate
-lsq6_slice_y_voxel <- mincConvertWorldToVoxel(lsq6_files[1], 0, lsq6_slice_y_world, 0, nearest_voxel = T)[2]
-
-# Define position of boxlines along each axis
-# Note: set sign for grid padding based on direction of steps
-lsq6_box_sequence <- list(lsq6_x=c((lsq6_starts[1] - grid_padding),
-                                   (lsq6_ends[1] + grid_padding)),
-                          lsq6_y=c((lsq6_starts[2] - grid_padding),
-                                   (lsq6_ends[2] + grid_padding)),
-                          lsq6_z=c((lsq6_starts[3] + grid_padding),
-                                   (lsq6_ends[3] - grid_padding)))
-
-# Define position of gridlines along each axis
-lsq6_grid_sequence <- list(lsq6_x=seq(from=(lsq6_starts[1] - grid_padding), 
-                                      to=(lsq6_ends[1] + grid_padding), 
-                                      by=-grid_spacing),
-                           lsq6_y=seq(from=(lsq6_starts[2] - grid_padding), 
-                                      to=(lsq6_ends[2] + grid_padding), 
-                                      by=-grid_spacing),
-                           lsq6_z=seq(from=(lsq6_starts[3] + grid_padding), 
-                                      to=(lsq6_ends[3] - grid_padding), 
-                                      by=grid_spacing)
-)
-
-# Define position of points along each axis
-lsq6_point_sequence <- list(lsq6_x=seq(from=(lsq6_starts[1] - grid_padding), 
-                                      to=(lsq6_ends[1] + grid_padding), 
-                                      length.out=grid_points),
-                           lsq6_y=seq(from=(lsq6_starts[2] - grid_padding), 
-                                      to=(lsq6_ends[2] + grid_padding), 
-                                      length.out=grid_points),
-                           lsq6_z=seq(from=(lsq6_starts[3] + grid_padding), 
-                                      to=(lsq6_ends[3] - grid_padding), 
-                                      length.out=grid_points)
-)
-```
-
-## Step 3: Compute box in lsq6 space
-
-## Step 4: Compute grids in lsq6 space
-
-
-
+<!-- \newpage -->
+<!-- # Deformations of an image registration -->
 
 <!-- \newpage -->
 <!-- # Visualizing image registration quality -->
